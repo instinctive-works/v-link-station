@@ -1,0 +1,11 @@
+{
+  "name": "@v-link/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Express + Socket.IO server for V-Link Station",
+  "main": "server.js",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "@v-link/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron main process for V-Link Station",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "build": {
+    "appId": "com.vlink.station",
+    "productName": "V-Link Station",
+    "directories": {
+      "output": "../../dist"
+    },
+    "files": [
+      "electron/**",
+      "../../apps/server/**",
+      "../../packages/renderer/**",
+      "../../packages/shared/**",
+      "../../packages/protocols/**",
+      "package.json"
+    ],
+    "win": {
+      "target": "dir"
+    }
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2"
+  }
+}

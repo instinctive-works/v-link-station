@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>V-Link Station</title>
+  <link rel="stylesheet" href="/mocap.css" />
+</head>
+<body>
+  <!-- ── Main layout ─────────────────────────────────────── -->
+  <div id="main-layout">
+    <!-- Canvas area -->
+    <div id="canvas-area">
+      <div id="canvas-title">V-Link Station</div>
+      <!-- graph-viewport: receives CSS transform for pan/zoom -->
+      <div id="graph-viewport">
+        <svg id="conn-svg"></svg>
+        <div id="node-canvas"></div>
+      </div>
+    </div>
+
+    <!-- Right panel -->
+    <div id="right-panel">
+      <div id="panel-header">
+        <span id="panel-title">Inspector</span>
+      </div>
+      <div id="panel-content">
+        <p class="panel-placeholder">ノードを選択してください</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Context menu ────────────────────────────────────── -->
+  <div id="ctx-menu" class="context-menu hidden"></div>
+
+  <!-- ── Scripts ────────────────────────────────────────── -->
+  <!-- Socket.IO client -->
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- Shared constants (browser mode) -->
+  <script src="/shared/constants.js"></script>
+  <!-- Main canvas infrastructure -->
+  <script src="/mocap.js"></script>
+
+  <!-- Node plugins -->
+  <script src="/protocols/livelink-face/renderer.js"></script>
+  <script src="/protocols/livelink-face/node.js"></script>
+  <script src="/protocols/webcam/node.js"></script>
+  <script src="/protocols/screen-capture/node.js"></script>
+  <script src="/protocols/stream-output/node.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "name": "@v-link/protocols",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Protocol plugins for V-Link Station"
+}
