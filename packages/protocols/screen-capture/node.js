@@ -4,16 +4,19 @@
 window.NodePlugins['screen-capture'] = {
   label:       'スクリーンキャプチャ',
   icon:        '🖥️',
-  menuSection: '映像入力',
+  menuGroup:   '映像',
+  menuSection: '入力',
   nodeClass:   'node-card node-video',
   pins: {
-    out: [{ type: 'video', label: '映像' }],
+    out: [
+      { type: window.PIN_TYPES.WASM_FRAME, label: '映像' }, // index 0
+    ],
     in:  [],
   },
 
   create(pos) {
     const nodeId = window.generateNodeId();
-    const name   = window.nextUniqueName('screen-capture', 'Screen Capture');
+    const name   = window.nextUniqueName('screen-capture', 'ScreenCapture');
     window.createPluginNode('screen-capture', nodeId, pos);
     const nameEl = document.getElementById(`ename-${nodeId}`);
     if (nameEl) nameEl.value = name;
@@ -21,38 +24,36 @@ window.NodePlugins['screen-capture'] = {
   },
 
   mount(nodeId, nodeEl) {
-    const state = { stream: null, fps: '--', resolution: '--' };
+    const state = { stream: null, fps: '--', resolution: '--', fitMode: 'letterbox', outRes: 'source' };
     window._screenState = window._screenState || {};
     window._screenState[nodeId] = state;
 
     const isElectron = !!(window.electronAPI && window.electronAPI.getSources);
 
-    // Build source-select row HTML only for Electron
-    const sourceSelectHtml = isElectron ? `
-        <div class="form-row" style="margin-top:8px">
-          <label>キャプチャソース</label>
-          <select id="sc-source-${nodeId}"></select>
-        </div>` : '';
-
     nodeEl.innerHTML = `
       <div class="node-header node-video" id="nheader-${nodeId}">
         <span class="node-state-dot" id="ndot-${nodeId}"></span>
-        <input class="node-name" id="ename-${nodeId}" value="Screen Capture" />
+        <input class="node-name" id="ename-${nodeId}" value="ScreenCapture" />
         <button class="node-delete-btn" onclick="window.removePluginNode('${nodeId}')">✕</button>
       </div>
       <div class="node-body">
-        ${sourceSelectHtml}
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
-          <button class="btn-primary" id="sc-btn-${nodeId}">開始</button>
-          <div class="pin-row pin-out pin-type-video" data-type="video" style="margin:0;">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-top:8px;">
+          ${isElectron ? `
+          <div class="form-row" style="margin:0;flex:1;padding-right:8px;">
+            <label>キャプチャソース</label>
+            <select id="sc-source-${nodeId}"></select>
+          </div>` : '<div style="flex:1;"></div>'}
+          <div class="pin-row pin-out pin-type-wasm-frame" data-type="${window.PIN_TYPES.WASM_FRAME}" style="margin:0;">
             <span class="pin-label">映像</span>
             <span class="pin-dot"></span>
           </div>
         </div>
+        <div style="margin-top:8px;">
+          <button class="btn-primary" id="sc-btn-${nodeId}">開始</button>
+        </div>
       </div>
     `;
 
-    // Attach events after innerHTML is set
     const btn = document.getElementById(`sc-btn-${nodeId}`);
     if (btn) btn.addEventListener('click', () => window._screenToggle(nodeId));
 
@@ -78,6 +79,29 @@ window.NodePlugins['screen-capture'] = {
         <div class="stats-row">
           <span class="stats-lbl">FPS</span>
           <span class="stats-val" id="psc-fps-${nodeId}">--</span>
+        </div>
+      </div>
+      <div class="perf-section">
+        <div class="perf-section-title">出力設定</div>
+        <div class="form-row">
+          <label>フィットモード</label>
+          <select id="psc-fit-${nodeId}"
+            onchange="window._screenSetFit('${nodeId}', this.value)"
+            onmousedown="event.stopPropagation()">
+            <option value="letterbox" ${!state || state.fitMode === 'letterbox' ? 'selected' : ''}>レターボックス</option>
+            <option value="crop" ${state && state.fitMode === 'crop' ? 'selected' : ''}>クロップ (中天)</option>
+            <option value="stretch" ${state && state.fitMode === 'stretch' ? 'selected' : ''}>ストレッチ</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label>出力解像度</label>
+          <select id="psc-outres-${nodeId}"
+            onchange="window._screenSetRes('${nodeId}', this.value)"
+            onmousedown="event.stopPropagation()">
+            <option value="source" ${!state || state.outRes === 'source' ? 'selected' : ''}>ソースのまま</option>
+            <option value="1920x1080" ${state && state.outRes === '1920x1080' ? 'selected' : ''}>1920×1080</option>
+            <option value="1280x720" ${state && state.outRes === '1280x720' ? 'selected' : ''}>1280×720</option>
+          </select>
         </div>
       </div>
       <div class="perf-section">
@@ -126,7 +150,6 @@ window.NodePlugins['screen-capture'] = {
     if (state && state.stream) {
       state.stream.getTracks().forEach(t => t.stop());
     }
-    window.nodeStreams.delete(nodeId);
     if (window._screenState) delete window._screenState[nodeId];
   },
 };
@@ -164,11 +187,12 @@ window._screenToggle = async (nodeId) => {
   if (state.stream) {
     state.stream.getTracks().forEach(t => t.stop());
     state.stream = null;
-    window.nodeStreams.delete(nodeId);
     const btn = document.getElementById(`sc-btn-${nodeId}`);
     if (btn) { btn.textContent = '開始'; btn.className = 'btn-primary'; }
     const dot = document.getElementById(`ndot-${nodeId}`);
     if (dot) dot.className = 'node-state-dot';
+    const panelVidStop = document.getElementById(`psc-video-${nodeId}`);
+    if (panelVidStop) panelVidStop.srcObject = null;
     return;
   }
 
@@ -202,42 +226,94 @@ window._screenToggle = async (nodeId) => {
     }
 
     state.stream = stream;
-    window.nodeStreams.set(nodeId, stream);
 
     const btn = document.getElementById(`sc-btn-${nodeId}`);
     if (btn) { btn.textContent = '停止'; btn.className = 'btn-danger'; }
     const dot = document.getElementById(`ndot-${nodeId}`);
     if (dot) dot.className = 'node-state-dot state-active';
+    const panelVid = document.getElementById(`psc-video-${nodeId}`);
+    if (panelVid) panelVid.srcObject = stream;
 
     // Resolution
     const track = stream.getVideoTracks()[0];
     const settings = track.getSettings();
     state.resolution = `${settings.width || '--'}×${settings.height || '--'}`;
-    const resEl = document.getElementById(`sc-res-${nodeId}`);
-    if (resEl) resEl.textContent = state.resolution;
 
-    // Stop when user ends share via browser/OS UI (browser path only)
+    // Stop when user ends share via browser/OS UI
     track.addEventListener('ended', () => window._screenToggle(nodeId));
 
-    // FPS via requestVideoFrameCallback
+    // FPS + WASM frame output via requestVideoFrameCallback
     const vid = document.createElement('video');
     vid.srcObject = stream;
     vid.muted = true;
     vid.play();
-    if (vid.requestVideoFrameCallback) {
-      let last = performance.now(), count = 0;
-      const tick = () => {
-        count++;
-        const now = performance.now();
-        if (now - last >= 1000) {
-          state.fps = (count / ((now - last) / 1000)).toFixed(1);
-          count = 0; last = now;
+    state._vid = vid;
+
+    const oc   = new OffscreenCanvas(1, 1);
+    const octx = oc.getContext('2d');
+    let last = performance.now(), count = 0, seq = 0;
+
+    function onFrame(now) {
+      if (!state.stream) return;
+
+      count++;
+      const elapsed = now - last;
+      if (elapsed >= 1000) {
+        state.fps = (count / (elapsed / 1000)).toFixed(1);
+        count = 0;
+        last = now;
+      }
+
+      if (window.VLinkWasm) {
+        const tr   = state.stream.getVideoTracks()[0];
+        const s    = tr ? tr.getSettings() : {};
+        const srcW = s.width  || 1280;
+        const srcH = s.height || 720;
+        const [outW, outH] = state.outRes === '1920x1080' ? [1920, 1080]
+                           : state.outRes === '1280x720'  ? [1280, 720]
+                           : [srcW, srcH];
+        if (oc.width !== outW || oc.height !== outH) { oc.width = outW; oc.height = outH; }
+        octx.fillStyle = '#000';
+        octx.fillRect(0, 0, outW, outH);
+        if (state.fitMode === 'stretch') {
+          octx.drawImage(vid, 0, 0, outW, outH);
+        } else if (state.fitMode === 'crop') {
+          const scale = Math.max(outW / srcW, outH / srcH);
+          const sw = outW / scale, sh = outH / scale;
+          octx.drawImage(vid, (srcW - sw) / 2, (srcH - sh) / 2, sw, sh, 0, 0, outW, outH);
+        } else { // letterbox
+          const scale = Math.min(outW / srcW, outH / srcH);
+          const dw = srcW * scale, dh = srcH * scale;
+          octx.drawImage(vid, 0, 0, srcW, srcH, (outW - dw) / 2, (outH - dh) / 2, dw, dh);
         }
-        if (state.stream) vid.requestVideoFrameCallback(tick);
-      };
-      vid.requestVideoFrameCallback(tick);
+        const imgData = octx.getImageData(0, 0, outW, outH);
+        const size = outW * outH * 4;
+        const ptr  = window.VLinkWasm.alloc_frame(size);
+        if (ptr) {
+          new Uint8Array(window.VLinkWasm.memory.buffer, ptr, size).set(imgData.data);
+          window.notifyFrame(nodeId, 0, { ptr, width: outW, height: outH, stride: outW * 4, seq });
+          window.VLinkWasm.free_frame(ptr, size);
+          seq++;
+        }
+      }
+
+      vid.requestVideoFrameCallback(onFrame);
+    }
+
+    if (vid.requestVideoFrameCallback) {
+      vid.requestVideoFrameCallback(onFrame);
     }
   } catch (err) {
     console.error('Screen capture error:', err);
   }
+};
+
+window._screenSetFit = (nodeId, val) => {
+  const st = window._screenState && window._screenState[nodeId];
+  if (st) st.fitMode = val;
+};
+
+window._screenSetRes = (nodeId, val) => {
+  const st = window._screenState && window._screenState[nodeId];
+  if (st) st.outRes = val;
 };

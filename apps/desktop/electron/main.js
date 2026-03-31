@@ -1,18 +1,37 @@
-const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, Menu } = require('electron/main');
+﻿const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, Menu, session } = require('electron/main');
 const path = require('path');
+const { spawn } = require('child_process');
 
-// GPU プロセスが利用できない環境（VM・RDP など）でのクラッシュを防ぐ
-app.commandLine.appendSwitch('--disable-gpu');
-app.commandLine.appendSwitch('--disable-gpu-sandbox');
-// DPI / 高解像度対応
-app.commandLine.appendSwitch('high-dpi-support', '1');
-// ネイティブメニューバー(File/Edit...)を完全削除
+// DPI / 鬮倩ｧ｣蜒丞ｺｦ蟇ｾ蠢懶ｼ・PU 譛牙柑縺ｮ縺ｾ縺ｾ縺ｫ縺励※繝・く繧ｹ繝医Ξ繝ｳ繝繝ｪ繝ｳ繧ｰ繧帝ｫ伜刀雉ｪ縺ｫ菫昴▽・・app.commandLine.appendSwitch('high-dpi-support', '1');
+// 繝阪う繝・ぅ繝悶Γ繝九Η繝ｼ繝舌・(File/Edit...)繧貞ｮ悟・蜑企勁
 Menu.setApplicationMenu(null);
 const { fork } = require('child_process');
 
 const SERVER_PORT = 3000;
 let mainWindow = null;
 let serverProcess = null;
+let vcamProcess = null;
+
+function startVcamHelper() {
+  // 開発時: __dirname = apps/desktop/electron → ../resources = apps/desktop/resources
+  // パッケージ後: app.getAppPath()/resources に配置
+  const helperPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'vcam-helper.exe')
+    : path.join(__dirname, '..', 'resources', 'vcam-helper.exe');
+  const fs = require('fs');
+  if (!fs.existsSync(helperPath)) {
+    console.log('[vcam] helper not found:', helperPath);
+    return;
+  }
+  vcamProcess = spawn(helperPath, [], {
+    stdio: ['pipe', 'inherit', 'inherit'],
+  });
+  vcamProcess.on('exit', (code) => {
+    console.log(`[vcam] helper exited with code ${code}`);
+    vcamProcess = null;
+  });
+  console.log('[vcam] helper started');
+}
 
 function startServer() {
   const serverPath = path.join(__dirname, '..', '..', '..', 'apps', 'server', 'server.js');
@@ -27,8 +46,8 @@ function startServer() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    width: 1920,
+    height: 1080,
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#1a1a2e',
@@ -41,6 +60,7 @@ function createWindow() {
   });
 
   mainWindow.loadURL(`http://localhost:${SERVER_PORT}`);
+  if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools({ mode: 'detach' });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -49,6 +69,19 @@ function createWindow() {
 
 app.whenReady().then(() => {
   startServer();
+  startVcamHelper();
+
+  // Add COOP/COEP headers at the Electron session level so SharedArrayBuffer
+  // is available even before the Express server has a chance to set them.
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Cross-Origin-Opener-Policy': ['same-origin'],
+        'Cross-Origin-Embedder-Policy': ['require-corp'],
+      },
+    });
+  });
 
   // Wait for the server process to signal it is ready before opening the window.
   // Fall back to a 4-second timeout in case the IPC message is never sent.
@@ -72,11 +105,13 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (serverProcess) serverProcess.kill();
+  if (vcamProcess)   vcamProcess.kill();
   if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
   if (serverProcess) serverProcess.kill();
+  if (vcamProcess)   vcamProcess.kill();
 });
 
 // IPC: open directory picker for recording path
@@ -94,3 +129,18 @@ ipcMain.handle('desktopCapture:getSources', async (_event, opts) => {
   const sources = await desktopCapturer.getSources({ types, thumbnailSize: { width: 0, height: 0 } });
   return sources.map((s) => ({ id: s.id, name: s.name }));
 });
+
+// IPC: 仮想カメラへフレームを送信
+// payload: { width: number, height: number, jpeg: ArrayBuffer }
+ipcMain.on('vcam:frame', (_event, payload) => {
+  if (!vcamProcess || !vcamProcess.stdin || vcamProcess.stdin.destroyed) return;
+  const { width, height, jpeg } = payload;
+  const jpegBuf = Buffer.from(jpeg);
+  const header  = Buffer.allocUnsafe(12);
+  header.writeUInt32LE(width,           0);
+  header.writeUInt32LE(height,          4);
+  header.writeUInt32LE(jpegBuf.length,  8);
+  vcamProcess.stdin.write(header);
+  vcamProcess.stdin.write(jpegBuf);
+});
+

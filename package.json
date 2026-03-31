@@ -5,7 +5,8 @@
   "description": "LiveLink motion capture receiver, recorder, and WebRTC video distributor",
   "scripts": {
     "start": "node node_modules/electron/cli.js apps/desktop",
-    "dist": "pnpm --filter @v-link/desktop dist"
+    "dev": "node node_modules/electron/cli.js apps/desktop --dev",
+    "build": "pnpm --filter @v-link/desktop build"
   },
   "devDependencies": {
     "electron": "^33.0.0",

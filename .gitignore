@@ -1,2 +1,6 @@
 node_modules
 .vscode/
+record/
+packages/wasm-video/target/
+dist/
+packages/virtual-camera-helper/build/

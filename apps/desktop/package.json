@@ -3,14 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "description": "Electron main process for V-Link Station",
+  "author": "V-Link",
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder"
+    "build": "electron-builder",
+    "build:dir": "electron-builder --dir"
   },
   "build": {
     "appId": "com.vlink.station",
     "productName": "V-Link Station",
+    "asar": false,
+    "npmRebuild": false,
     "directories": {
       "output": "../../dist"
     },
@@ -23,8 +27,20 @@
       "package.json"
     ],
     "win": {
-      "target": "dir"
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
     }
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^24.0.0"
   },
   "dependencies": {
     "express": "^4.18.2",

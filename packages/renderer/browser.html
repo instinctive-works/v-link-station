@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>V-Link Station</title>
+  <style>
+    :root {
+      --bg:      #0f0f1a;
+      --bg2:     #1a1a2e;
+      --bg3:     #22223a;
+      --border:  #2e2e4a;
+      --text:    #f4f4ff;
+      --text2:   #b8b8d4;
+      --accent:  #5a6aff;
+      --green:   #22c55e;
+      --orange:  #f97316;
+      --red:     #ef4444;
+      --blue:    #3b82f6;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    /* ── nav ── */
+    #app-nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 40px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 14px;
+      gap: 4px;
+      z-index: 100;
+    }
+    .nav-brand {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent);
+      margin-right: 14px;
+      letter-spacing: 0.03em;
+    }
+    .nav-tab {
+      padding: 4px 14px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      color: var(--text2);
+      font-size: 13px;
+      cursor: pointer;
+      transition: color 0.15s, background 0.15s, border-color 0.15s;
+    }
+    .nav-tab:hover { color: var(--text); background: var(--bg3); }
+    .nav-tab.active { color: var(--text); background: var(--bg3); border-color: var(--border); }
+
+    /* ── pages ── */
+    .page { display: none; padding: 56px 20px 20px; }
+    .page.active { display: block; }
+
+    /* ── Takes page ── */
+    #takes-page { max-width: 860px; margin: 0 auto; }
+    #takes-page h1 { font-size: 16px; color: var(--text2); margin-bottom: 14px; font-weight: 600; }
+    #take-list { display: flex; flex-direction: column; gap: 8px; }
+    .take-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .take-id { flex: 1; font-size: 12px; color: var(--text); font-family: monospace; min-width: 140px; }
+    .take-badges { display: flex; gap: 5px; }
+    .badge {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      border: 1px solid;
+    }
+    .badge-video  { color: var(--orange); border-color: var(--orange); background: rgba(249,115,22,.1); }
+    .badge-mocap  { color: var(--blue);   border-color: var(--blue);   background: rgba(59,130,246,.1); }
+    #takes-msg { color: var(--text2); font-size: 13px; text-align: center; padding: 40px 0; }
+
+    /* ── Live page ── */
+    #live-page {
+      padding: 56px 20px 20px;
+      display: none;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #live-page.active { display: flex; }
+    #live-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 16px;
+    }
+    #live-header h1 { font-size: 15px; color: var(--text2); font-weight: 600; flex: 1; }
+    #status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--text2);
+      flex-shrink: 0;
+    }
+    #status-dot.connecting { background: var(--accent); animation: blink 1s infinite; }
+    #status-dot.live       { background: var(--green); }
+    #status-dot.error      { background: var(--red); }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    #status-label { font-size: 11px; color: var(--text2); }
+
+    /* ── Stream grid ── */
+    #stream-grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 12px;
+      align-content: flex-start;
+      overflow-y: auto;
+    }
+    .stream-card {
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      cursor: pointer;
+      position: relative;
+      transition: border-color 0.15s, transform 0.1s, opacity 0.4s;
+    }
+    .stream-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .stream-card.dead  { opacity: 0.35; cursor: default; pointer-events: none; }
+    .stream-card video {
+      width: 100%;
+      display: block;
+      background: #000;
+    }
+    .stream-card-label {
+      position: absolute;
+      bottom: 0; left: 0; right: 0;
+      padding: 20px 10px 8px;
+      background: linear-gradient(transparent, rgba(0,0,0,0.75));
+      font-size: 12px;
+      color: rgba(255,255,255,0.85);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .stream-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+    .stream-card.dead .stream-dot { background: var(--red); }
+    #live-placeholder {
+      grid-column: 1 / -1;
+      color: var(--text2);
+      text-align: center;
+      padding: 60px 20px;
+    }
+    #live-placeholder .ph-icon { font-size: 40px; margin-bottom: 12px; }
+    #live-placeholder p { font-size: 13px; margin-top: 6px; }
+    #live-placeholder .ph-sub { font-size: 11px; color: #555; margin-top: 4px; }
+
+    /* ── Fullscreen modal ── */
+    #fs-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.95);
+      z-index: 200;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    #fs-modal.open { display: flex; }
+    #fs-modal video, #fs-modal img {
+      width: 100vw;
+      height: 100vh;
+      object-fit: contain;
+      display: none;
+    }
+    #fs-modal.open.type-video video { display: block; }
+    #fs-modal.open.type-img img { display: block; }
+    #fs-close {
+      position: absolute;
+      top: 12px; right: 16px;
+      background: rgba(255,255,255,0.1);
+      border: none;
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 18px;
+      width: 32px; height: 32px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #fs-close:hover { background: rgba(255,255,255,0.2); }
+    #fs-label {
+      position: absolute;
+      top: 14px; left: 16px;
+      font-size: 12px;
+      color: var(--text2);
+    }
+  </style>
+</head>
+<body>
+  <nav id="app-nav">
+    <span class="nav-brand">V-Link Station</span>
+    <button class="nav-tab active" id="tab-takes" onclick="showTab('takes')">🎬 収録一覧</button>
+    <button class="nav-tab"        id="tab-live"  onclick="showTab('live')">📺 ライブ視聴</button>
+  </nav>
+
+  <!-- 収録一覧ページ -->
+  <div id="takes-page" class="page active">
+    <h1>🎬 収録一覧</h1>
+    <div id="take-list"><p id="takes-msg">読み込み中...</p></div>
+  </div>
+
+  <!-- ライブ視聴ページ -->
+  <div id="live-page" class="page">
+    <div id="live-header">
+      <h1>📺 ライブ視聴</h1>
+      <span id="status-dot"></span>
+      <span id="status-label">接続中...</span>
+    </div>
+    <div id="stream-grid">
+      <div id="live-placeholder">
+        <div class="ph-icon">📺</div>
+        <p>コンソールからの映像を待っています...</p>
+        <p class="ph-sub">コンソール側でノードに映像が流れている必要があります。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- フルスクリーンモーダル -->
+  <div id="fs-modal">
+    <span id="fs-label"></span>
+    <video id="fs-video" autoplay playsinline></video>
+    <img id="fs-img" />
+    <button id="fs-close" onclick="closeFullscreen()">✕</button>
+  </div>
+
+  <script>
+    // ── Tab switching ──────────────────────────────────────────────────────────
+    function showTab(name) {
+      document.querySelectorAll('.nav-tab').forEach(t =>
+        t.classList.toggle('active', t.id === 'tab-' + name));
+      document.querySelectorAll('.page').forEach(p =>
+        p.classList.toggle('active', p.id === name + '-page'));
+      
+      // Pause live background thumbnails when not in live view
+      if (typeof _cards !== 'undefined') {
+        _cards.forEach(c => {
+          if (c.video) {
+            if (name === 'live') c.video.play().catch(()=>{});
+            else c.video.pause();
+          }
+        });
+      }
+
+      if (name === 'takes') loadTakes();
+      if (name === 'live' && typeof _liveInitialized !== 'undefined' && !_liveInitialized) initLive();
+    }
+
+    // ── Takes list ─────────────────────────────────────────────────────────────
+    function fmtId(id) {
+      const m = id.match(/^take_(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/);
+      return m ? `${m[1]}/${m[2]}/${m[3]}\u00a0\u00a0${m[4]}:${m[5]}:${m[6]}` : id;
+    }
+    function escHtml(s) {
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    async function loadTakes() {
+      const list = document.getElementById('take-list');
+      list.innerHTML = '<p id="takes-msg">読み込み中...</p>';
+      try {
+        const res = await fetch('/api/takes');
+        const takes = await res.json();
+        if (!takes.length) {
+          list.innerHTML = '<p id="takes-msg">収録データがありません</p>';
+          return;
+        }
+        list.innerHTML = takes.map(t => {
+          const videoBadge = t.hasVideo ? `<span class="badge badge-video">映像</span>` : '';
+          const mocapBadge = t.hasMocap ? `<span class="badge badge-mocap">モーション</span>` : '';
+          return `<div class="take-card">
+            <div class="take-id">${escHtml(fmtId(t.id))}</div>
+            <div class="take-badges">${videoBadge}${mocapBadge}</div>
+          </div>`;
+        }).join('');
+      } catch (e) {
+        list.innerHTML = `<p id="takes-msg">エラー: ${escHtml(e.message)}</p>`;
+      }
+    }
+
+    // ── Live view (WebRTC) ─────────────────────────────────────────────────────
+    const EVENTS = {
+      RTC_VIEWER_JOIN:   'rtc:viewer-join',
+      RTC_OFFER:         'rtc:offer',
+      RTC_ANSWER:        'rtc:answer',
+      RTC_ICE:           'rtc:ice',
+      STREAM_REGISTER:   'stream:register',
+      STREAM_UNREGISTER: 'stream:unregister',
+      STREAM_FRAME:      'stream:frame',
+      STREAM_LIST:       'stream:list',
+    };
+
+    const dot   = document.getElementById('status-dot');
+    const lbl   = document.getElementById('status-label');
+    const grid  = document.getElementById('stream-grid');
+
+    let socket = null;
+    let pc = null;
+    let _broadcasterId = null;
+    let _liveInitialized = false;
+
+    // streamId → { video(hidden), canvas, ctx, rafId, dead, name }
+    const _cards = new Map();
+
+    function setStatus(state, text) {
+      dot.className = state;
+      lbl.textContent = text;
+    }
+
+    function updateStatusFromCards() {
+      const alive = [..._cards.values()].filter(c => !c.dead).length;
+      const total = _cards.size;
+      if (total === 0) {
+        setStatus('connecting', '配信者を待っています...');
+      } else if (alive === 0) {
+        setStatus('error', 'すべての映像が停止しました');
+      } else {
+        setStatus('live', `受信中 (${alive})`);
+      }
+    }
+
+    // ── Stream Card logic ───────────────────────────────────────────────────
+
+    // Card builder for both video and img
+    function getOrCreateCard(streamId, name, isFastShare, isMjpeg) {
+      if (_cards.has(streamId)) {
+         const existing = _cards.get(streamId);
+         if (existing.isFastShare === isFastShare && !existing.dead) return existing;
+         if (existing.dead) {
+           clearTimeout(existing._removeTimer);
+           if (existing.card) existing.card.remove();
+           if (existing.video) { existing.video.srcObject = null; existing.video.remove(); }
+           _cards.delete(streamId);
+         }
+      }
+
+      // name is passed directly
+      const card = document.createElement('div');
+      card.className = 'stream-card';
+      card.dataset.stream = streamId;
+
+      let video = null, img = null;
+      if (isFastShare) {
+        img = document.createElement('img');
+        img.style.cssText = 'width:100%; display:block; background:#000; border-radius:8px 8px 0 0; object-fit:contain;';
+        if (isMjpeg) img.src = `/stream/${streamId}`;
+        card.appendChild(img);
+      } else {
+        video = document.createElement('video');
+        video.autoplay = true;
+        video.playsInline = true;
+        video.muted = true;
+        video.style.cssText = 'width:100%; display:block; background:#000; border-radius:8px 8px 0 0; object-fit:contain;';
+        card.appendChild(video);
+      }
+
+      const labelEl = document.createElement('div');
+      labelEl.className = 'stream-card-label';
+      const dotEl = document.createElement('span');
+      dotEl.className = 'stream-dot';
+      const nameEl = document.createElement('span');
+      nameEl.textContent = name;
+      labelEl.appendChild(dotEl);
+      labelEl.appendChild(nameEl);
+      card.appendChild(labelEl);
+
+      const cardData = { isFastShare, isMjpeg: !!isMjpeg, video, img, card, dead: false, name, streamId, _pollId: null };
+      
+      card.addEventListener('click', () => {
+        if (!cardData.dead) openFullscreen(cardData);
+      });
+
+      const ph = document.getElementById('live-placeholder');
+      if (ph) ph.remove();
+      grid.appendChild(card);
+      _cards.set(streamId, cardData);
+
+      updateStatusFromCards();
+      return cardData;
+    }
+
+    let _streamSeq = 0;
+
+    function addStreamCard(stream) {
+      _streamSeq++;
+      const cardData = getOrCreateCard(stream.id, `画面共有 ${_streamSeq}`, false);
+      if (!cardData) return;
+      cardData.stream = stream;
+      cardData.video.srcObject = stream;
+      cardData.video.play().catch(() => {});
+
+      // ── Dead stream detection ──────────────────────────────────────────────
+      stream.getTracks().forEach(track => {
+        track.addEventListener('ended', () => markStreamDead(stream.id));
+      });
+
+      cardData._pollId = setInterval(() => {
+        if (stream.getTracks().every(t => t.readyState === 'ended')) {
+          clearInterval(cardData._pollId);
+          markStreamDead(stream.id);
+        }
+      }, 5000);
+    }
+
+    function handleFastShareFrame(streamId, frameDataUrl) {
+      let cardData = _cards.get(streamId);
+      if (!cardData || cardData.dead) {
+        _streamSeq++;
+        cardData = getOrCreateCard(streamId, `画面共有 ${_streamSeq}`, true);
+      }
+      if (cardData && cardData.img) {
+        cardData.img.src = frameDataUrl;
+        
+        // Update fullscreen if active
+        if (_activeFsStreamId === streamId) {
+          fsImg.src = frameDataUrl;
+        }
+
+        // Keep-alive timer for dead detection
+        clearTimeout(cardData._fsTimer);
+        cardData._fsTimer = setTimeout(() => {
+          markStreamDead(streamId);
+        }, 3000); // 3 seconds without frames = dead
+      }
+    }
+
+    function markStreamDead(streamId) {
+      const cardData = _cards.get(streamId);
+      if (!cardData || cardData.dead) return;
+      cardData.dead = true;
+      clearInterval(cardData._pollId);
+      clearTimeout(cardData._fsTimer);
+
+      if (cardData.card) cardData.card.classList.add('dead');
+
+      if (_activeFsStreamId === streamId) closeFullscreen();
+
+      // Remove card after 8 s
+      cardData._removeTimer = setTimeout(() => {
+        if (cardData.video) { cardData.video.srcObject = null; cardData.video.remove(); }
+        if (cardData.img) cardData.img.remove();
+        if (cardData.card) cardData.card.remove();
+        _cards.delete(streamId);
+
+        if (_cards.size === 0) {
+          grid.innerHTML = `<div id="live-placeholder">
+            <div class="ph-icon">📺</div>
+            <p>コンソールからの映像を待っています...</p>
+            <p class="ph-sub">コンソール側でノードに映像が流れている必要があります。</p>
+          </div>`;
+        }
+        updateStatusFromCards();
+      }, 8000);
+
+      updateStatusFromCards();
+    }
+
+    // ── Fullscreen modal ───────────────────────────────────────────────────────
+    const fsModal = document.getElementById('fs-modal');
+    const fsVideo = document.getElementById('fs-video');
+    const fsImg   = document.getElementById('fs-img');
+    const fsLabel = document.getElementById('fs-label');
+    
+    let _activeFsStreamId = null;
+
+    function openFullscreen(cardData) {
+      fsLabel.textContent = cardData.name;
+      _activeFsStreamId = cardData.streamId;
+      
+      fsModal.className = '';
+      if (cardData.isFastShare) {
+        fsImg.src = cardData.img.src;
+        fsModal.classList.add('open', 'type-img');
+      } else {
+        fsVideo.srcObject = cardData.stream;
+        fsVideo.muted = false;
+        fsModal.classList.add('open', 'type-video');
+        fsVideo.play().catch(() => {});
+      }
+      
+      // Pause all grid thumbnails to save decoding resources during fullscreen
+      _cards.forEach(c => {
+        if (c.video && !c.video.paused) c.video.pause();
+      });
+    }
+
+    function closeFullscreen() {
+      fsModal.className = '';
+      fsVideo.pause();
+      fsVideo.srcObject = null;
+      fsImg.src = '';
+      _activeFsStreamId = null;
+      
+      // Resume grid thumbnails if we are on the live tab
+      const isLiveTab = document.getElementById('tab-live').classList.contains('active');
+      if (isLiveTab) {
+        _cards.forEach(c => {
+          if (c.video && c.video.paused) c.video.play().catch(()=>{});
+        });
+      }
+    }
+
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeFullscreen(); });
+
+    // ── WebRTC init ────────────────────────────────────────────────────────────
+    async function initLive() {
+      _liveInitialized = true;
+      setStatus('connecting', '接続中...');
+      try {
+        if (typeof io === 'undefined') {
+          await new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = '/socket.io/socket.io.js';
+            s.onload = resolve; s.onerror = reject;
+            document.head.appendChild(s);
+          });
+        }
+        socket = io();
+        socket.on(EVENTS.RTC_OFFER, async ({ broadcasterId, sdp }) => {
+          if (!pc) return;
+          _broadcasterId = broadcasterId;
+          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          socket.emit(EVENTS.RTC_ANSWER, { broadcasterId, sdp: answer });
+        });
+        socket.on(EVENTS.RTC_ICE, async ({ candidate }) => {
+          if (!pc) return;
+          try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch(_) {}
+        });
+        socket.on('disconnect', () => {
+          setStatus('error', '切断されました');
+          _liveInitialized = false;
+        });
+        socket.on('fastshare:frame', ({ streamId, frame }) => {
+          handleFastShareFrame(streamId, frame);
+        });
+        socket.on(EVENTS.STREAM_LIST, (streams) => {
+          for (const { nodeId, name, mode } of streams) {
+            _streamSeq++;
+            getOrCreateCard(nodeId, name, true, mode === 'mjpeg');
+          }
+        });
+        socket.on(EVENTS.STREAM_REGISTER, ({ nodeId, name, mode }) => {
+          _streamSeq++;
+          getOrCreateCard(nodeId, name, true, mode === 'mjpeg');
+        });
+        socket.on(EVENTS.STREAM_FRAME, ({ nodeId, jpeg }) => {
+          let cardData = _cards.get(nodeId);
+          if (!cardData || cardData.dead) return;
+          if (cardData.isMjpeg) return; // MJPEG cards self-update via <img src>
+          const blob = new Blob([jpeg], { type: 'image/jpeg' });
+          const url  = URL.createObjectURL(blob);
+          const prev = cardData.img && cardData.img.src;
+          if (cardData.img) cardData.img.src = url;
+          if (prev && prev.startsWith('blob:')) URL.revokeObjectURL(prev);
+          if (_activeFsStreamId === nodeId && fsImg) {
+            const prevFs = fsImg.src;
+            fsImg.src = url;
+            if (prevFs.startsWith('blob:')) URL.revokeObjectURL(prevFs);
+          }
+          clearTimeout(cardData._fsTimer);
+          cardData._fsTimer = setTimeout(() => markStreamDead(nodeId), 3000);
+        });
+        socket.on(EVENTS.STREAM_UNREGISTER, ({ nodeId }) => {
+          markStreamDead(nodeId);
+        });
+        socket.on('connect', () => joinRTC());
+      } catch (e) {
+        setStatus('error', '初期化失敗');
+        _liveInitialized = false;
+      }
+    }
+
+    function joinRTC() {
+      if (pc) { pc.close(); pc = null; }
+      let streamSeq = 0;
+
+      pc = new RTCPeerConnection({ iceServers: [] });
+
+      pc.ontrack = e => {
+        const stream = e.streams[0];
+        if (!stream) return;
+        addStreamCard(stream);
+      };
+
+      pc.onicecandidate = ({ candidate }) => {
+        if (candidate && socket) socket.emit(EVENTS.RTC_ICE, { targetId: _broadcasterId, candidate });
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (!pc) return;
+        if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+          setStatus('error', '映像接続が切れました');
+        }
+      };
+
+      setStatus('connecting', '配信者を待っています...');
+      socket.emit(EVENTS.RTC_VIEWER_JOIN);
+    }
+
+    // ── Init ───────────────────────────────────────────────────────────────────
+    loadTakes();
+  </script>
+</body>
+</html>
