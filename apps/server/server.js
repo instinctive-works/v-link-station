@@ -7,6 +7,11 @@ const fs = require('fs');
 
 const { LIVELINK_FACE_PORT, SERVER_PORT, EVENTS } = require('../../packages/shared/constants');
 
+// ─── Take ID validator ────────────────────────────────────────────────────────
+function isValidTakeId(id) {
+  return typeof id === 'string' && /^take_[\w\-]+$/.test(id);
+}
+
 // ─── Protocol parsers ─────────────────────────────────────────────────────────
 const PROTOCOL_PARSERS = [
   require('../../packages/protocols/livelink-face/parser'),
@@ -17,6 +22,13 @@ const app = express();
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*' } });
 
+// COOP/COEP headers — required for SharedArrayBuffer (WASM frame passing)
+app.use((_req, res, next) => {
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  next();
+});
+
 // Serve static renderer files
 app.use(express.static(path.join(__dirname, '..', '..', 'packages', 'renderer')));
 
@@ -26,8 +38,54 @@ app.use('/protocols', express.static(path.join(__dirname, '..', '..', 'packages'
 // Serve shared constants
 app.use('/shared', express.static(path.join(__dirname, '..', '..', 'packages', 'shared')));
 
+// Serve WASM video processor
+app.use('/wasm-video', express.static(path.join(__dirname, '..', '..', 'packages', 'wasm-video')));
+
 app.get('/', (_req, res) => {
   res.sendFile(path.join(__dirname, '..', '..', 'packages', 'renderer', 'index.html'));
+});
+
+app.get('/takes', (_req, res) => {
+  res.sendFile(path.join(__dirname, '..', '..', 'packages', 'renderer', 'takes.html'));
+});
+
+app.get('/live', (_req, res) => {
+  res.sendFile(path.join(__dirname, '..', '..', 'packages', 'renderer', 'live.html'));
+});
+
+// ─── Takes API ────────────────────────────────────────────────────────────────
+const RECORD_DIR = path.join(__dirname, '..', '..', 'record');
+
+app.get('/api/takes', (_req, res) => {
+  if (!fs.existsSync(RECORD_DIR)) return res.json([]);
+  const dirs = fs.readdirSync(RECORD_DIR).filter(d => {
+    try { return fs.statSync(path.join(RECORD_DIR, d)).isDirectory(); } catch { return false; }
+  }).sort().reverse();
+  const takes = dirs.map(d => {
+    const dir = path.join(RECORD_DIR, d);
+    const hasVideo = fs.existsSync(path.join(dir, 'video.webm'));
+    const hasMocap = fs.existsSync(path.join(dir, 'mocap.vlnk'));
+    const videoSize = hasVideo ? fs.statSync(path.join(dir, 'video.webm')).size : 0;
+    const mocapSize = hasMocap ? fs.statSync(path.join(dir, 'mocap.vlnk')).size : 0;
+    return { id: d, hasVideo, hasMocap, videoSize, mocapSize };
+  });
+  res.json(takes);
+});
+
+app.get('/api/takes/:takeId/video.webm', (req, res) => {
+  const takeId = req.params.takeId;
+  if (!isValidTakeId(takeId)) return res.status(400).send('Invalid take ID');
+  const filePath = path.join(RECORD_DIR, takeId, 'video.webm');
+  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+  res.sendFile(filePath);
+});
+
+app.get('/api/takes/:takeId/mocap.vlnk', (req, res) => {
+  const takeId = req.params.takeId;
+  if (!isValidTakeId(takeId)) return res.status(400).send('Invalid take ID');
+  const filePath = path.join(RECORD_DIR, takeId, 'mocap.vlnk');
+  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+  res.sendFile(filePath);
 });
 
 // ─── Device state ─────────────────────────────────────────────────────────────
@@ -114,7 +172,37 @@ io.on('connection', (socket) => {
     stopTake(socket, takeId);
   });
 
+  socket.on(EVENTS.TAKE_VIDEO_CHUNK, ({ takeId, chunk }) => {
+    const take = activeTakes.get(takeId);
+    if (!take) return;
+    if (!take.videoStream) {
+      const videoPath = path.join(take.takeDir, 'video.webm');
+      take.videoStream = fs.createWriteStream(videoPath);
+    }
+    take.videoStream.write(Buffer.from(chunk));
+  });
+
+  // ── WebRTC signaling ──
+  socket.on(EVENTS.RTC_VIEWER_JOIN, () => {
+    // Notify all other clients (broadcasters) that a viewer wants a stream
+    socket.broadcast.emit(EVENTS.RTC_VIEWER_JOINED, { viewerId: socket.id });
+  });
+
+  socket.on(EVENTS.RTC_OFFER, ({ viewerId, sdp }) => {
+    io.to(viewerId).emit(EVENTS.RTC_OFFER, { broadcasterId: socket.id, sdp });
+  });
+
+  socket.on(EVENTS.RTC_ANSWER, ({ broadcasterId, sdp }) => {
+    io.to(broadcasterId).emit(EVENTS.RTC_ANSWER, { viewerId: socket.id, sdp });
+  });
+
+  socket.on(EVENTS.RTC_ICE, ({ targetId, candidate }) => {
+    io.to(targetId).emit(EVENTS.RTC_ICE, { fromId: socket.id, candidate });
+  });
+
   socket.on('disconnect', () => {
+    // Notify broadcasters that the viewer left
+    socket.broadcast.emit(EVENTS.RTC_VIEWER_LEFT, { viewerId: socket.id });
     console.log('Client disconnected:', socket.id);
   });
 });
@@ -159,6 +247,10 @@ function stopTake(socket, takeId) {
   if (!take) return;
 
   io.off(EVENTS.MOCAP_DATA, take.onData);
+  if (take.videoStream) {
+    take.videoStream.end();
+    take.videoStream = null;
+  }
   take.writeStream.end(() => {
     socket.emit(EVENTS.TAKE_STOPPED, { takeId, filePath: take.filePath });
     console.log(`Take stopped: ${take.filePath}`);
@@ -167,8 +259,17 @@ function stopTake(socket, takeId) {
 }
 
 // ─── Start HTTP server ────────────────────────────────────────────────────────
-httpServer.listen(SERVER_PORT, '127.0.0.1', () => {
-  console.log(`V-Link Station server running at http://127.0.0.1:${SERVER_PORT}`);
+httpServer.listen(SERVER_PORT, '0.0.0.0', () => {
+  const { networkInterfaces } = require('os');
+  const nets = networkInterfaces();
+  const addrs = ['127.0.0.1'];
+  for (const iface of Object.values(nets)) {
+    for (const n of iface) {
+      if (n.family === 'IPv4' && !n.internal) addrs.push(n.address);
+    }
+  }
+  console.log(`V-Link Station server running on port ${SERVER_PORT}`);
+  addrs.forEach(a => console.log(`  http://${a}:${SERVER_PORT}`));
   // Notify parent Electron process that the server is ready
-  if (process.send) process.send({ type: 'ready' });
+  if (process.send) process.send({ type: 'ready', addresses: addrs, port: SERVER_PORT });
 });

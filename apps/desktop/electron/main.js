@@ -1,12 +1,8 @@
-const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, Menu } = require('electron/main');
+﻿const { app, BrowserWindow, ipcMain, dialog, desktopCapturer, Menu, session } = require('electron/main');
 const path = require('path');
 
-// GPU プロセスが利用できない環境（VM・RDP など）でのクラッシュを防ぐ
-app.commandLine.appendSwitch('--disable-gpu');
-app.commandLine.appendSwitch('--disable-gpu-sandbox');
-// DPI / 高解像度対応
-app.commandLine.appendSwitch('high-dpi-support', '1');
-// ネイティブメニューバー(File/Edit...)を完全削除
+// DPI / 鬮倩ｧ｣蜒丞ｺｦ蟇ｾ蠢懶ｼ・PU 譛牙柑縺ｮ縺ｾ縺ｾ縺ｫ縺励※繝・く繧ｹ繝医Ξ繝ｳ繝繝ｪ繝ｳ繧ｰ繧帝ｫ伜刀雉ｪ縺ｫ菫昴▽・・app.commandLine.appendSwitch('high-dpi-support', '1');
+// 繝阪う繝・ぅ繝悶Γ繝九Η繝ｼ繝舌・(File/Edit...)繧貞ｮ悟・蜑企勁
 Menu.setApplicationMenu(null);
 const { fork } = require('child_process');
 
@@ -27,8 +23,8 @@ function startServer() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    width: 1920,
+    height: 1080,
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#1a1a2e',
@@ -41,6 +37,7 @@ function createWindow() {
   });
 
   mainWindow.loadURL(`http://localhost:${SERVER_PORT}`);
+  if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools({ mode: 'detach' });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -49,6 +46,18 @@ function createWindow() {
 
 app.whenReady().then(() => {
   startServer();
+
+  // Add COOP/COEP headers at the Electron session level so SharedArrayBuffer
+  // is available even before the Express server has a chance to set them.
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Cross-Origin-Opener-Policy': ['same-origin'],
+        'Cross-Origin-Embedder-Policy': ['require-corp'],
+      },
+    });
+  });
 
   // Wait for the server process to signal it is ready before opening the window.
   // Fall back to a 4-second timeout in case the IPC message is never sent.
@@ -94,3 +103,4 @@ ipcMain.handle('desktopCapture:getSources', async (_event, opts) => {
   const sources = await desktopCapturer.getSources({ types, thumbnailSize: { width: 0, height: 0 } });
   return sources.map((s) => ({ id: s.id, name: s.name }));
 });
+

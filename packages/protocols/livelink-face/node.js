@@ -1,11 +1,12 @@
 // LiveLink Face node plugin
 window.NodePlugins['livelink-face'] = {
-  label:       'LiveLink Face',
+  label:       'LiveLink Face in',
   icon:        '🎭',
-  menuSection: 'モーションキャプチャ',
+  menuGroup:   'フェイシャルキャプチャ',
+  menuSection: 'LiveLink',
   nodeClass:   'node-card node-livelink',
   pins: {
-    out: [{ type: 'livelink-face', label: 'Face Data' }],
+    out: [{ type: window.PIN_TYPES.LIVELINK_FACE, label: 'Face Data' }],
     in:  [],
   },
 
@@ -38,14 +39,14 @@ window.NodePlugins['livelink-face'] = {
         <input class="node-name" id="ename-${nodeId}" value="LiveLink Face" />
         <button class="node-delete-btn" onclick="window.removePluginNode('${nodeId}')">✕</button>
       </div>
-      <div class="node-body">
-        <div class="pin-row pin-out pin-type-livelink-face" data-type="livelink-face">
-          <span class="pin-label">Face Data</span>
-          <span class="pin-dot"></span>
-        </div>
-        <div class="form-row" style="margin-top:8px">
+      <div class="node-body" style="min-height:80px;">
+        <div class="form-row">
           <label>受信ポート</label>
           <input type="number" id="ll-port-${nodeId}" value="11111" min="1" max="65535" />
+        </div>
+        <div class="pin-row pin-out pin-type-livelink-face" data-type="livelink-face" style="justify-content:flex-end;margin:0;">
+          <span class="pin-label">Face Data</span>
+          <span class="pin-dot"></span>
         </div>
       </div>
     `;

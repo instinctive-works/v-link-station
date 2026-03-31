@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>収録一覧 — V-Link Station</title>
+  <style>
+    :root {
+      --bg:      #0f0f1a;
+      --bg2:     #1a1a2e;
+      --bg3:     #22223a;
+      --border:  #2e2e4a;
+      --text:    #f4f4ff;
+      --text2:   #b8b8d4;
+      --accent:  #5a6aff;
+      --green:   #22c55e;
+      --orange:  #f97316;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    /* ── nav ── */
+    #app-nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 36px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 2px;
+      z-index: 100;
+    }
+    .nav-brand { font-size: 12px; font-weight: 700; color: var(--accent); margin-right: 10px; opacity: 0.85; }
+    .nav-btn {
+      padding: 3px 12px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      color: var(--text2);
+      font-size: 12px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .nav-btn:hover { color: var(--text); background: var(--bg3); }
+    .nav-btn.active { color: var(--text); background: var(--bg3); border-color: var(--border); }
+
+    /* ── content ── */
+    #content {
+      padding: 56px 24px 24px;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 18px; color: var(--text2); margin-bottom: 16px; font-weight: 600; }
+
+    #take-list { display: flex; flex-direction: column; gap: 8px; }
+
+    .take-card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .take-id {
+      flex: 1;
+      font-size: 13px;
+      color: var(--text);
+      font-family: monospace;
+    }
+    .take-badges { display: flex; gap: 6px; }
+    .badge {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      border: 1px solid;
+    }
+    .badge-video { color: var(--orange); border-color: var(--orange); background: rgba(249,115,22,.1); }
+    .badge-mocap { color: #3b82f6; border-color: #3b82f6; background: rgba(59,130,246,.1); }
+    .badge-size { color: var(--text2); border-color: var(--border); background: transparent; }
+    .take-actions { display: flex; gap: 6px; }
+    .dl-btn {
+      padding: 4px 10px;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text2);
+      font-size: 11px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .dl-btn:hover { color: var(--text); border-color: var(--accent); }
+
+    #empty { color: var(--text2); text-align: center; padding: 40px; }
+    #loading { color: var(--text2); text-align: center; padding: 40px; }
+  </style>
+</head>
+<body>
+  <nav id="app-nav">
+    <span class="nav-brand">V-Link Station</span>
+    <a class="nav-btn" href="/">📡 コンソール</a>
+    <a class="nav-btn active" href="/takes">🎬 収録一覧</a>
+    <a class="nav-btn" href="/live">📺 ライブ視聴</a>
+  </nav>
+
+  <div id="content">
+    <h1>🎬 収録一覧</h1>
+    <div id="take-list"><div id="loading">読み込み中...</div></div>
+  </div>
+
+  <script>
+    function formatBytes(n) {
+      if (n === 0) return '0 B';
+      const k = 1024, sizes = ['B','KB','MB','GB'];
+      const i = Math.floor(Math.log(n) / Math.log(k));
+      return (n / Math.pow(k, i)).toFixed(1) + ' ' + sizes[i];
+    }
+
+    function formatTakeId(id) {
+      // take_2026-03-31T17-05-42-902Z → 2026/03/31 17:05:42
+      const m = id.match(/^take_(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/);
+      if (m) return `${m[1]}/${m[2]}/${m[3]}  ${m[4]}:${m[5]}:${m[6]}`;
+      return id;
+    }
+
+    async function loadTakes() {
+      const list = document.getElementById('take-list');
+      try {
+        const res = await fetch('/api/takes');
+        const takes = await res.json();
+        if (takes.length === 0) {
+          list.innerHTML = '<div id="empty">収録データがありません。</div>';
+          return;
+        }
+        list.innerHTML = takes.map(t => {
+          const videoBadge = t.hasVideo
+            ? `<span class="badge badge-video">🎥 映像</span><span class="badge badge-size">${formatBytes(t.videoSize)}</span>`
+            : '';
+          const mocapBadge = t.hasMocap
+            ? `<span class="badge badge-mocap">🤸 モーション</span><span class="badge badge-size">${formatBytes(t.mocapSize)}</span>`
+            : '';
+          const videoBtn = t.hasVideo
+            ? `<a class="dl-btn" href="/api/takes/${encodeURIComponent(t.id)}/video.webm" download>⬇ 映像</a>`
+            : '';
+          const mocapBtn = t.hasMocap
+            ? `<a class="dl-btn" href="/api/takes/${encodeURIComponent(t.id)}/mocap.vlnk" download>⬇ モーション</a>`
+            : '';
+          return `
+            <div class="take-card">
+              <div class="take-id">${formatTakeId(t.id)}</div>
+              <div class="take-badges">${videoBadge}${mocapBadge}</div>
+              <div class="take-actions">${videoBtn}${mocapBtn}</div>
+            </div>`;
+        }).join('');
+      } catch (e) {
+        list.innerHTML = `<div id="empty">読み込みエラー: ${e.message}</div>`;
+      }
+    }
+
+    loadTakes();
+  </script>
+</body>
+</html>

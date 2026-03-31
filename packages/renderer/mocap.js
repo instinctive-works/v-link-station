@@ -135,6 +135,12 @@ function setupPinTooltips(nodeEl) {
   });
 }
 
+// accepts は単一文字列またはカンマ区切り複数型をサポート
+function typeMatchesAccepts(accepts, type) {
+  if (!accepts || !type) return true;
+  return accepts.split(',').some(a => a === type);
+}
+
 window.createPluginNode = (pluginId, nodeId, pos) => {
   const plugin = window.NodePlugins[pluginId];
   if (!plugin) return console.warn('Unknown plugin:', pluginId);
@@ -194,6 +200,7 @@ function selectNode(nodeId) {
 window.selectNode = selectNode;
 
 function showNodePanel(nodeId) {
+  _activateTab('nodes');
   const info = nodeRegistry.get(nodeId);
   if (!info) return;
   const plugin = window.NodePlugins[info.pluginId];
@@ -212,6 +219,7 @@ function showNodePanel(nodeId) {
 }
 
 function showNodeList() {
+  _activateTab('nodes');
   const titleEl   = document.getElementById('panel-title');
   const contentEl = document.getElementById('panel-content');
   if (titleEl) titleEl.textContent = 'ノード一覧';
@@ -254,6 +262,51 @@ function showNodeList() {
   }
   html += '</div>';
   contentEl.innerHTML = html;
+}
+
+function _activateTab(name) {
+  document.querySelectorAll('.panel-tab').forEach(t =>
+    t.classList.toggle('active', t.id === 'tab-' + name));
+}
+
+window.switchRightTab = function switchRightTab(name) {
+  _activateTab(name);
+  if (name === 'nodes') showNodeList();
+  else if (name === 'takes') loadTakesPanel();
+};
+
+async function loadTakesPanel() {
+  const contentEl = document.getElementById('panel-content');
+  if (!contentEl) return;
+  contentEl.innerHTML = '<p class="panel-placeholder">読み込み中...</p>';
+  try {
+    const res = await fetch('/api/takes');
+    const takes = await res.json();
+    if (!takes.length) {
+      contentEl.innerHTML = '<p class="panel-placeholder">収録データがありません</p>';
+      return;
+    }
+    function fmtId(id) {
+      const m = id.match(/^take_(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/);
+      return m ? `${m[1]}/${m[2]}/${m[3]}\u00a0\u00a0${m[4]}:${m[5]}:${m[6]}` : id;
+    }
+    let html = '<div class="takes-list">';
+    for (const t of takes) {
+      const videoBadge = t.hasVideo ? `<span class="badge badge-video">映像</span>` : '';
+      const mocapBadge = t.hasMocap ? `<span class="badge badge-mocap">モーション</span>` : '';
+      const videoBtn   = t.hasVideo ? `<a class="dl-btn" href="/api/takes/${encodeURIComponent(t.id)}/video.webm" download>⬇ 映像</a>` : '';
+      const mocapBtn   = t.hasMocap ? `<a class="dl-btn" href="/api/takes/${encodeURIComponent(t.id)}/mocap.vlnk" download>⬇ モーション</a>` : '';
+      html += `<div class="take-item">
+        <div class="take-item-id">${window.escHtml(fmtId(t.id))}</div>
+        <div class="take-item-badges">${videoBadge}${mocapBadge}</div>
+        <div class="take-item-actions">${videoBtn}${mocapBtn}</div>
+      </div>`;
+    }
+    html += '</div>';
+    contentEl.innerHTML = html;
+  } catch (e) {
+    contentEl.innerHTML = `<p class="panel-placeholder">エラー: ${window.escHtml(e.message)}</p>`;
+  }
 }
 
 // ── Drag nodes ────────────────────────────────────────────────────────────────
@@ -393,6 +446,29 @@ window.removeConnectionsForNode = (nodeId) => {
   }
 };
 
+// Fire a trigger signal from fromNodeId's output pin at fromPinIdx
+// Calls onTrigger(fromNodeId, toNodeId) on all connected downstream nodes
+window.fireTrigger = (fromNodeId, fromPinIdx) => {
+  for (const conn of window.connections.values()) {
+    if (conn.fromNodeId !== fromNodeId || conn.fromPinIdx !== fromPinIdx) continue;
+    const handler = nodeHandlers.get(conn.toNodeId);
+    if (handler && handler.onTrigger) handler.onTrigger(fromNodeId, conn.toNodeId);
+  }
+};
+
+// Notify downstream nodes of a new WASM_FRAME token.
+// fromPinIdx identifies which output pin the frame originates from.
+// token: { ptr, width, height, stride, seq }
+// The ptr is valid for the duration of this synchronous call chain;
+// the caller (source node) frees it immediately after this returns.
+window.notifyFrame = (fromNodeId, fromPinIdx, token) => {
+  for (const conn of window.connections.values()) {
+    if (conn.fromNodeId !== fromNodeId || conn.fromPinIdx !== fromPinIdx) continue;
+    const handler = nodeHandlers.get(conn.toNodeId);
+    if (handler && handler.onFrame) handler.onFrame(token, fromNodeId, conn.toNodeId);
+  }
+};
+
 // ── Pin drag-to-connect ───────────────────────────────────────────────────────
 let draftState = null; // { fromNodeId, fromPinIdx, type, svgPath }
 
@@ -429,7 +505,8 @@ document.addEventListener('mouseup', (e) => {
       const outNodeId = nodeEl ? nodeEl.id : null;
       const type      = row.dataset.type;
       if (outNodeId && outNodeId !== draftState.toNodeId) {
-        if (!draftState.accepts || draftState.accepts === type) {
+        // draftState.accepts が空 = 任意型ピン（Override のPass Out等）→ 何でも受け入れ
+        if (!draftState.accepts || !type || typeMatchesAccepts(draftState.accepts, type)) {
           const outRows    = nodeEl.querySelectorAll('.pin-row.pin-out');
           const fromPinIdx = [...outRows].indexOf(row);
           createConnection(outNodeId, fromPinIdx, draftState.toNodeId, draftState.toPinIdx, type);
@@ -444,7 +521,8 @@ document.addEventListener('mouseup', (e) => {
       const toNodeId = nodeEl ? nodeEl.id : null;
       const accepts  = row.dataset.accepts;
       if (toNodeId && toNodeId !== draftState.fromNodeId) {
-        if (!accepts || accepts === draftState.type) {
+        // draftState.type が空 = 任意型ピン（Override の Pass Out等）→ 何でも受け入れ
+        if (!accepts || !draftState.type || typeMatchesAccepts(accepts, draftState.type)) {
           const inRows   = nodeEl.querySelectorAll('.pin-row.pin-in');
           const toPinIdx = [...inRows].indexOf(row);
           createConnection(draftState.fromNodeId, draftState.fromPinIdx, toNodeId, toPinIdx, draftState.type);
@@ -461,7 +539,7 @@ function highlightCompatiblePins(type) {
   document.querySelectorAll('.pin-row.pin-in .pin-dot').forEach(dot => {
     const row = dot.closest('.pin-row');
     const accepts = row.dataset.accepts;
-    if (!accepts || accepts === type) {
+    if (typeMatchesAccepts(accepts, type)) {
       dot.classList.add('accept-highlight');
     }
   });
@@ -471,7 +549,7 @@ function highlightCompatibleOutPins(accepts) {
   document.querySelectorAll('.pin-row.pin-out .pin-dot').forEach(dot => {
     const row  = dot.closest('.pin-row');
     const type = row.dataset.type;
-    if (!accepts || accepts === type) dot.classList.add('accept-highlight');
+    if (typeMatchesAccepts(accepts, type)) dot.classList.add('accept-highlight');
   });
 }
 
@@ -488,7 +566,7 @@ document.addEventListener('mousedown', (e) => {
   const nodeEl = dot.closest('.node-card');
   const nodeId = nodeEl ? nodeEl.id : null;
 
-  // Alt+click on any pin → disconnect all connections on that pin
+  // Alt+click on any pin → disconnect all connections on that pin immediately
   if (e.button === 0 && e.altKey) {
     e.preventDefault();
     e.stopPropagation();
@@ -516,43 +594,11 @@ document.addEventListener('mousedown', (e) => {
     const outRows = nodeEl.querySelectorAll('.pin-row.pin-out');
     const pinIdx  = [...outRows].indexOf(row);
     const type    = row.dataset.type || 'default';
-
-    // 既存接続があれば in-pin 側を固定端にして reversed draft を開始（in-pin drag と対称な挙動）
-    const existing = [...window.connections.values()]
-      .find(c => c.fromNodeId === nodeId && c.fromPinIdx === pinIdx);
-    if (existing) {
-      const inPt  = getPinCenter(existing.toNodeId, 'in', existing.toPinIdx);
-      const toId  = existing.toNodeId;
-      const toIdx = existing.toPinIdx;
-      window.removeSingleConnection(nodeId, existing.toNodeId);
-      if (inPt) {
-        const svg  = document.getElementById('conn-svg');
-        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-        path.classList.add('conn-path-draft');
-        svg.appendChild(path);
-        draftState = { toNodeId: toId, toPinIdx: toIdx, accepts: type,
-                       svgPath: path, startPt: inPt, reversed: true };
-        return;
-      }
-    }
     startDraftConnection(nodeId, pinIdx, type, startPt);
   } else if (row.classList.contains('pin-in')) {
     const inRows  = nodeEl.querySelectorAll('.pin-row.pin-in');
     const pinIdx  = [...inRows].indexOf(row);
     const accepts = row.dataset.accepts;
-
-    // If this in-pin already has a connection, detach it and drag from the out-pin
-    const existing = [...window.connections.values()]
-      .find(c => c.toNodeId === nodeId && c.toPinIdx === pinIdx);
-    if (existing) {
-      const outPt = getPinCenter(existing.fromNodeId, 'out', existing.fromPinIdx);
-      const fromId  = existing.fromNodeId;
-      const fromIdx = existing.fromPinIdx;
-      const type    = existing.type || 'default';
-      window.removeSingleConnection(existing.fromNodeId, nodeId);
-      startDraftConnection(fromId, fromIdx, type, outPt);
-      return;
-    }
 
     const svg  = document.getElementById('conn-svg');
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -568,53 +614,157 @@ window.onCanvasContextMenu = (e) => {
   showContextMenu(e.clientX, e.clientY);
 };
 
+// Preferred display order for context menu groups
+const CTX_GROUP_ORDER = [
+  'フェイシャルキャプチャ',
+  'モーションキャプチャ',
+  '映像',
+  'リモート操作',
+  'ユーティリティ',
+];
+const ctxGroupState   = {}; // groupName → expanded (default: collapsed)
+const ctxSectionState = {}; // 'group|section' → expanded (default: collapsed)
+
+function _ctxMakeItem(plugin, x, y) {
+  const item = document.createElement('div');
+  item.className = 'ctx-item';
+  item.innerHTML = `<span class="ctx-icon">${plugin.icon || '◆'}</span><span>${plugin.label}</span>`;
+  item.addEventListener('click', () => {
+    hideContextMenu();
+    const cp  = screenToCanvas(x, y);
+    const pos = { x: cp.x - 110, y: cp.y - 20 };
+    plugin.create(pos);
+  });
+  return item;
+}
+
+function showPinDisconnectMenu(conns, isPinOut, x, y) {
+  const menu = document.getElementById('ctx-menu');
+  menu.innerHTML = '';
+  menu.classList.remove('hidden');
+
+  const title = document.createElement('div');
+  title.className = 'ctx-group-header';
+  title.style.cssText = 'cursor:default;pointer-events:none;';
+  title.innerHTML = '<span style="font-size:11px;color:var(--text2);">接続を解除:</span>';
+  menu.appendChild(title);
+
+  for (const conn of conns) {
+    const otherNodeId = isPinOut ? conn.toNodeId : conn.fromNodeId;
+    const otherEl  = document.getElementById(otherNodeId);
+    const nameEl   = otherEl ? otherEl.querySelector('.node-name') : null;
+    const nodeName = nameEl ? nameEl.value : otherNodeId;
+    // Pin label on the other side
+    const otherPinRows = otherEl
+      ? otherEl.querySelectorAll(isPinOut ? '.pin-row.pin-in' : '.pin-row.pin-out') : [];
+    const otherPinIdx  = isPinOut ? conn.toPinIdx : conn.fromPinIdx;
+    const otherPinRow  = otherPinRows[otherPinIdx];
+    const pinLabelEl   = otherPinRow ? otherPinRow.querySelector('.pin-label') : null;
+    const pinLabel     = pinLabelEl ? pinLabelEl.textContent.trim() : '';
+    const label        = pinLabel ? `${nodeName} › ${pinLabel}` : nodeName;
+
+    const item = document.createElement('div');
+    item.className = 'ctx-item';
+    item.innerHTML = `<span>${window.escHtml(label)}</span>`;
+    item.addEventListener('click', () => {
+      hideContextMenu();
+      window.removeSingleConnection(conn.fromNodeId, conn.toNodeId);
+    });
+    menu.appendChild(item);
+  }
+
+  const vw   = window.innerWidth;
+  const mw   = 220;
+  const left = x + mw > vw ? x - mw : x;
+  menu.style.left = left + 'px';
+  menu.style.top  = y + 'px';
+}
+
 function showContextMenu(x, y) {
   const menu = document.getElementById('ctx-menu');
   menu.innerHTML = '';
   menu.classList.remove('hidden');
 
-  // Group plugins by menuSection
-  const sections = {};
+  // Build grouped structure: groupName → { sectionName → [items] }
+  const groups = {};
   for (const [pluginId, plugin] of Object.entries(window.NodePlugins)) {
-    if (!plugin.menuSection) continue;
-    const sec = plugin.menuSection;
-    if (!sections[sec]) sections[sec] = [];
-    sections[sec].push({ pluginId, plugin });
+    const g = plugin.menuGroup;
+    if (!g) continue;
+    if (!groups[g]) groups[g] = {};
+    const sec = plugin.menuSection || '';
+    if (!groups[g][sec]) groups[g][sec] = [];
+    groups[g][sec].push({ pluginId, plugin });
   }
 
-  let firstSection = true;
-  for (const [sec, items] of Object.entries(sections)) {
-    if (!firstSection) {
+  // Sort groups by preferred order, then alphabetically for unknowns
+  const groupOrder = CTX_GROUP_ORDER.filter(g => groups[g])
+    .concat(Object.keys(groups).filter(g => !CTX_GROUP_ORDER.includes(g)));
+
+  for (let gi = 0; gi < groupOrder.length; gi++) {
+    const g = groupOrder[gi];
+    if (gi > 0) {
       const sep = document.createElement('div');
       sep.className = 'ctx-separator';
       menu.appendChild(sep);
     }
-    firstSection = false;
 
-    const lbl = document.createElement('div');
-    lbl.className = 'ctx-section-label';
-    lbl.textContent = sec;
-    menu.appendChild(lbl);
+    const gExp = ctxGroupState[g] === true;
+    const header = document.createElement('div');
+    header.className = 'ctx-group-header';
+    header.innerHTML = `<span class="ctx-group-arrow">${gExp ? '▼' : '▶'}</span><span>${g}</span>`;
+    const body = document.createElement('div');
+    body.className = 'ctx-group-body' + (gExp ? '' : ' collapsed');
 
-    for (const { pluginId, plugin } of items) {
-      const item = document.createElement('div');
-      item.className = 'ctx-item';
-      item.innerHTML = `<span class="ctx-icon">${plugin.icon || '◆'}</span><span>${plugin.label}</span>`;
-      item.addEventListener('click', () => {
-        hideContextMenu();
-        const cp  = screenToCanvas(x, y);
-        const pos = { x: cp.x - 110, y: cp.y - 20 };
-        plugin.create(pos);
-      });
-      menu.appendChild(item);
+    header.addEventListener('click', () => {
+      body.classList.toggle('collapsed');
+      ctxGroupState[g] = !body.classList.contains('collapsed');
+      header.querySelector('.ctx-group-arrow').textContent = ctxGroupState[g] ? '▼' : '▶';
+    });
+
+    menu.appendChild(header);
+    menu.appendChild(body);
+
+    for (const [sec, items] of Object.entries(groups[g]).sort(([a], [b]) => {
+      // セクション内の表示順: まずセクションなし(空文字列)、次に入力、最後に出力
+      const order = ['', '入力', '出力'];
+      const ia = order.indexOf(a), ib = order.indexOf(b);
+      return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+    })) {
+      if (sec) {
+        // Collapsible sub-section
+        const secKey = g + '|' + sec;
+        const sExp = ctxSectionState[secKey] === true;
+        const secH = document.createElement('div');
+        secH.className = 'ctx-section-header';
+        secH.innerHTML = `<span class="ctx-group-arrow">${sExp ? '▼' : '▶'}</span><span>${sec}</span>`;
+        const secB = document.createElement('div');
+        secB.className = 'ctx-section-body' + (sExp ? '' : ' collapsed');
+        secH.addEventListener('click', (e) => {
+          e.stopPropagation();
+          secB.classList.toggle('collapsed');
+          ctxSectionState[secKey] = !secB.classList.contains('collapsed');
+          secH.querySelector('.ctx-group-arrow').textContent = ctxSectionState[secKey] ? '▼' : '▶';
+        });
+        body.appendChild(secH);
+        body.appendChild(secB);
+        for (const { plugin } of [...items].sort((a,b) => a.plugin.label.localeCompare(b.plugin.label, 'ja'))) secB.appendChild(_ctxMakeItem(plugin, x, y));
+      } else {
+        for (const { plugin } of [...items].sort((a,b) => a.plugin.label.localeCompare(b.plugin.label, 'ja'))) body.appendChild(_ctxMakeItem(plugin, x, y));
+      }
     }
   }
 
-  // Position
+  // Position — anchor to top-left or flip left/up if near viewport edge
   const vw = window.innerWidth, vh = window.innerHeight;
-  const mw = 200, mh = menu.offsetHeight || 300;
-  menu.style.left = (x + mw > vw ? x - mw : x) + 'px';
-  menu.style.top  = (y + mh > vh ? y - mh : y) + 'px';
+  const mw = 200;
+  // Use a generous height estimate so the menu doesn't jump after groups open
+  const mh = 400;
+  const left = x + mw > vw ? x - mw : x;
+  const top  = y + mh > vh ? Math.max(0, y - mh) : y;
+  menu.style.left = left + 'px';
+  menu.style.top  = top  + 'px';
+  menu.dataset.anchorX = String(x);
+  menu.dataset.anchorTx = String(viewTransform.tx);
 }
 
 function hideContextMenu() {
@@ -661,6 +811,12 @@ document.getElementById('canvas-area').addEventListener('mousedown', (e) => {
     rightDragMoved = false;
     panStart = { x: e.clientX, y: e.clientY, tx: viewTransform.tx, ty: viewTransform.ty };
     document.getElementById('canvas-area').classList.add('panning');
+    // Snapshot menu position so it tracks the canvas pan
+    const ctxMenu = document.getElementById('ctx-menu');
+    ctxMenu.dataset.panStartLeft = ctxMenu.style.left || '';
+    ctxMenu.dataset.panStartTop  = ctxMenu.style.top  || '';
+    ctxMenu.dataset.panStartTx   = String(viewTransform.tx);
+    ctxMenu.dataset.panStartTy   = String(viewTransform.ty);
   }
 });
 
@@ -673,6 +829,16 @@ document.addEventListener('mousemove', (e) => {
   viewTransform.ty = panStart.ty + dy;
   applyViewTransform();
   redrawConnections();
+  // Move context menu with canvas pan
+  const ctxMenu = document.getElementById('ctx-menu');
+  if (!ctxMenu.classList.contains('hidden') && ctxMenu.dataset.panStartLeft) {
+    const ptx = parseFloat(ctxMenu.dataset.panStartTx) || 0;
+    const pty = parseFloat(ctxMenu.dataset.panStartTy) || 0;
+    const pl  = parseFloat(ctxMenu.dataset.panStartLeft) || 0;
+    const pt  = parseFloat(ctxMenu.dataset.panStartTop)  || 0;
+    ctxMenu.style.left = (pl + viewTransform.tx - ptx) + 'px';
+    ctxMenu.style.top  = (pt + viewTransform.ty - pty) + 'px';
+  }
 });
 
 document.addEventListener('mouseup', (e) => {
@@ -685,6 +851,28 @@ document.addEventListener('mouseup', (e) => {
 });
 
 // Canvas right-click → add-node menu (right-drag suppresses menu)
+// Canvas right-click → add-node menu (right-drag suppresses menu)
+// Pin right-click → disconnect selection popup (intercepted before canvas handler)
+document.addEventListener('contextmenu', (e) => {
+  const dot = e.target;
+  if (!dot.classList.contains('pin-dot')) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const row    = dot.closest('.pin-row');
+  const nodeEl = dot.closest('.node-card');
+  if (!row || !nodeEl) return;
+  const nodeId   = nodeEl.id;
+  const isPinOut = row.classList.contains('pin-out');
+  const outRows  = nodeEl.querySelectorAll('.pin-row.pin-out');
+  const inRows   = nodeEl.querySelectorAll('.pin-row.pin-in');
+  const pinIdx   = isPinOut ? [...outRows].indexOf(row) : [...inRows].indexOf(row);
+  const conns = [...window.connections.values()].filter(c =>
+    (isPinOut  && c.fromNodeId === nodeId && c.fromPinIdx === pinIdx) ||
+    (!isPinOut && c.toNodeId   === nodeId && c.toPinIdx   === pinIdx)
+  );
+  if (conns.length) showPinDisconnectMenu(conns, isPinOut, e.clientX, e.clientY);
+}, true); // capture phase so it fires before the canvas handler
+
 document.getElementById('canvas-area').addEventListener('contextmenu', (e) => {
   e.preventDefault();
   if (!rightDragMoved) showContextMenu(e.clientX, e.clientY);
@@ -746,19 +934,58 @@ setInterval(() => {
 // Redraw connections on window resize
 window.addEventListener('resize', redrawConnections);
 
+// ── Right-panel drag resize ───────────────────────────────────────────────────
+(function () {
+  const handle = document.getElementById('panel-resize-handle');
+  const panel  = document.getElementById('right-panel');
+  let dragging = false;
+  let startX = 0;
+  let startW = 0;
+
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startW = panel.offsetWidth;
+    handle.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const delta = startX - e.clientX;
+    const newW  = Math.min(600, Math.max(200, startW + delta));
+    panel.style.width = newW + 'px';
+    redrawConnections();
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
 // ── Recording node ────────────────────────────────────────────────────────────
 window._recState = {};
 
 window.NodePlugins['recording'] = {
   label:       'Recording',
-  icon:        '⏺',
+  icon:        '📹',
+  menuGroup:   null,
   menuSection: null,
   nodeClass:   'node-card node-recording',
   pins: {
-    in:  [{ label: '映像入力', accepts: 'video' }],
+    in:  [
+      { label: 'トリガー入力', accepts: window.PIN_TYPES.TRIGGER },
+      { label: '収録', accepts: [window.PIN_TYPES.VIDEO, window.PIN_TYPES.WASM_FRAME] },
+    ],
     out: [
-      { type: 'trigger', label: '録画' },
-      { type: 'trigger', label: 'リプレイ' },
+      { type: window.PIN_TYPES.TRIGGER, label: '録画' },
+      { type: window.PIN_TYPES.REPLAY,  label: 'リプレイ' },
     ],
   },
 
@@ -777,7 +1004,10 @@ window.NodePlugins['recording'] = {
       takeName: 'take',
       recordDir: localStorage.getItem('rec-recordDir') || '',
       connectedVideoIds: new Set(),
+      connectedFrameIds: new Set(), // WASM_FRAME sources
       syncInterval: null,
+      // WebCodecs state
+      _encoder: null, _mux: null, _frameCanvas: null, _frameCtx: null,
     };
     window._recState[nodeId] = state;
 
@@ -789,19 +1019,26 @@ window.NodePlugins['recording'] = {
       </div>
       <div class="node-body">
         <div style="display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:4px;">
-          <div class="pin-row pin-in" data-accepts="video" style="margin:0;justify-self:start;">
-            <span class="pin-dot"></span>
-            <span class="pin-label" style="margin-left:6px;">収録</span>
+          <div style="display:flex;flex-direction:column;gap:8px;justify-self:start;">
+            <div class="pin-row pin-in pin-type-trigger" data-accepts="trigger" style="margin:0;">
+              <span class="pin-dot"></span>
+              <span class="pin-label" style="margin-left:6px;">トリガー</span>
+            </div>
+            <div class="pin-row pin-in pin-type-multi" data-accepts="video,wasm-frame" style="margin:0;">
+              <span class="pin-dot"></span>
+              <span class="pin-label" style="margin-left:6px;">収録</span>
+            </div>
           </div>
           <button class="btn-rec" id="rec-btn-${nodeId}"
                   onclick="window._recToggle('${nodeId}')" disabled
-                  style="margin:0;padding:6px 12px;font-size:13px;letter-spacing:0;">⏺ REC</button>
-          <div style="display:flex;flex-direction:column;gap:2px;justify-self:end;">
+                  onmousedown="event.stopPropagation()"
+                  style="transform:scaleX(1.8) scaleY(1.8);transform-origin:center;margin:16px 0;padding:6px 12px;font-size:13px;letter-spacing:0;">⏺ REC</button>
+          <div style="display:flex;flex-direction:column;gap:8px;justify-self:end;">
             <div class="pin-row pin-out pin-type-trigger" data-type="trigger" style="margin:0;">
-              <span class="pin-label">収録トリガー</span>
+              <span class="pin-label">トリガー</span>
               <span class="pin-dot"></span>
             </div>
-            <div class="pin-row pin-out pin-type-trigger" data-type="trigger" style="margin:0;">
+            <div class="pin-row pin-out pin-type-replay" data-type="replay" style="margin:0;">
               <span class="pin-label">リプレイ</span>
               <span class="pin-dot"></span>
             </div>
@@ -814,20 +1051,39 @@ window.NodePlugins['recording'] = {
     window.registerNodeHandlers(nodeId, {
       onConnected(fromNodeId, toNodeId) {
         if (toNodeId !== nodeId) return;
-        state.connectedVideoIds.add(fromNodeId);
+        const conn = [...window.connections.values()]
+          .find(c => c.toNodeId === nodeId && c.fromNodeId === fromNodeId);
+        if (conn && conn.toPinIdx === 1) {
+          if (conn.type === window.PIN_TYPES.WASM_FRAME) {
+            state.connectedFrameIds.add(fromNodeId);
+          } else {
+            state.connectedVideoIds.add(fromNodeId);
+          }
+        }
       },
       onDisconnected(fromNodeId, toNodeId) {
         if (toNodeId !== nodeId) return;
         state.connectedVideoIds.delete(fromNodeId);
-        if (state.active && state.connectedVideoIds.size === 0) window._recStop(nodeId);
+        state.connectedFrameIds.delete(fromNodeId);
+        if (state.active && state.connectedVideoIds.size === 0 && state.connectedFrameIds.size === 0)
+          window._recStop(nodeId);
+      },
+      onTrigger(_from, to) {
+        if (to !== nodeId) return;
+        window._recToggle(nodeId);
+      },
+      onFrame(token, fromNodeId) {
+        if (!state.active || !state.connectedFrameIds.has(fromNodeId)) return;
+        window._recEncodeFrame(nodeId, token);
       },
     });
 
     // Sync: enable/disable REC button based on stream availability
     state.syncInterval = setInterval(() => {
       const hasStream = [...state.connectedVideoIds].some(id => window.nodeStreams.has(id));
+      const hasFrame  = state.connectedFrameIds.size > 0;
       const btn = document.getElementById(`rec-btn-${nodeId}`);
-      if (btn) btn.disabled = !hasStream;
+      if (btn) btn.disabled = !(hasStream || hasFrame);
     }, 500);
   },
 
@@ -924,7 +1180,9 @@ window._recToggle = (nodeId) => {
 window._recStart = (nodeId) => {
   const state = window._recState[nodeId];
   if (!state || state.active) return;
-  if (![...state.connectedVideoIds].some(id => window.nodeStreams.has(id))) return;
+  const hasVideo = [...state.connectedVideoIds].some(id => window.nodeStreams.has(id));
+  const hasFrame = state.connectedFrameIds.size > 0;
+  if (!hasVideo && !hasFrame) return;
   state.active    = true;
   state.takeId    = (state.takeName || 'take') + '_' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
   state.startTime = Date.now();
@@ -940,6 +1198,26 @@ window._recStart = (nodeId) => {
     if (el) el.textContent = `${h}:${m}:${sec}`;
   }, 1000);
   window.socket.emit(EVENTS.TAKE_START, { takeId: state.takeId, recordDir: state.recordDir || undefined });
+  // Start MediaRecorder for VIDEO streams (VIDEO pin or WASM_FRAME pin with a backing stream)
+  const streamId = [...state.connectedVideoIds].find(id => window.nodeStreams.has(id))
+                ?? [...state.connectedFrameIds].find(id => window.nodeStreams.has(id));
+  if (streamId) {
+    const stream = window.nodeStreams.get(streamId);
+    if (stream) {
+      const mimeType = (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('video/webm;codecs=vp9'))
+        ? 'video/webm;codecs=vp9' : 'video/webm';
+      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
+      recorder.ondataavailable = (e) => {
+        if (e.data && e.data.size > 0 && state.takeId) {
+          e.data.arrayBuffer().then(buf => {
+            window.socket.emit(EVENTS.TAKE_VIDEO_CHUNK, { takeId: state.takeId, chunk: buf });
+          });
+        }
+      };
+      recorder.start(1000);
+      state._videoRecorder = recorder;
+    }
+  }
 };
 
 window._recStop = (nodeId) => {
@@ -952,11 +1230,166 @@ window._recStop = (nodeId) => {
   const el = document.getElementById(`rec-timer-${nodeId}`);
   if (el) el.textContent = '00:00:00';
   window.socket.emit(EVENTS.TAKE_STOP, { takeId: state.takeId });
+  // MediaRecorder cleanup
+  if (state._videoRecorder) { try { state._videoRecorder.stop(); } catch(_) {} state._videoRecorder = null; }
+  if (state._recorder) { try { state._recorder.stop(); } catch(_) {} state._recorder = null; }
+  if (state._frameCanvas && state._frameCanvas.parentNode) document.body.removeChild(state._frameCanvas);
+  state._frameCanvas = null; state._frameCtx = null;
   state.takeId = null;
+};
+
+// WASM_FRAME recording via canvas.captureStream() + MediaRecorder
+window._recEncodeFrame = (nodeId, token) => {
+  const state = window._recState[nodeId];
+  if (!state || !state.active || !window.VLinkWasm) return;
+  const { ptr, width, height } = token;
+  const size = width * height * 4;
+  // Lazily init hidden HTMLCanvasElement (resize if resolution changed)
+  if (!state._frameCanvas || state._frameCanvas.width !== width || state._frameCanvas.height !== height) {
+    if (state._recorder) { try { state._recorder.stop(); } catch(_) {} state._recorder = null; }
+    if (state._frameCanvas && state._frameCanvas.parentNode) document.body.removeChild(state._frameCanvas);
+    const cvs = document.createElement('canvas');
+    cvs.width = width; cvs.height = height;
+    cvs.style.cssText = 'position:fixed;left:-9999px;top:-9999px;pointer-events:none;visibility:hidden;';
+    document.body.appendChild(cvs);
+    state._frameCanvas = cvs;
+    state._frameCtx    = cvs.getContext('2d');
+  }
+  // Draw WASM memory slice to canvas
+  const raw = new Uint8ClampedArray(window.VLinkWasm.memory.buffer, ptr, size);
+  state._frameCtx.putImageData(new ImageData(raw, width, height), 0, 0);
+  // Lazily init MediaRecorder on first frame
+  if (!state._recorder) {
+    const stream   = state._frameCanvas.captureStream(30);
+    const mimeType = (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('video/webm;codecs=vp9'))
+      ? 'video/webm;codecs=vp9' : 'video/webm';
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 });
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0 && state.takeId) {
+        e.data.arrayBuffer().then(buf => {
+          window.socket.emit(EVENTS.TAKE_VIDEO_CHUNK, { takeId: state.takeId, chunk: buf });
+        });
+      }
+    };
+    recorder.start(1000);
+    state._recorder = recorder;
+  }
 };
 
 // Auto-place Recording node once on startup
 window.NodePlugins['recording'].create({ x: 50, y: 50 });
+
+// ── Stub node plugins (未実装) ────────────────────────────────────────────────
+(function() {
+  function mk(id, label, icon, grp, sec, cls, pins) {
+    const hc = cls.includes('node-livelink') ? ' node-livelink' : cls.includes('node-video') ? ' node-video' : '';
+    const ip = (pins.in  || []).map(p => `<div class="pin-row pin-in pin-type-${p.accepts}" data-accepts="${p.accepts}" style="margin:0;"><span class="pin-dot"></span><span class="pin-label" style="margin-left:6px;">${p.label}</span></div>`).join('');
+    const op = (pins.out || []).map(p => `<div class="pin-row pin-out pin-type-${p.type}" data-type="${p.type}" style="justify-content:flex-end;margin:0;"><span class="pin-label">${p.label}</span><span class="pin-dot"></span></div>`).join('');
+    const bdy = (ip && op) ? `<div style="display:flex;justify-content:space-between;align-items:flex-start;">${ip}${op}</div>` : (ip || op);
+    window.NodePlugins[id] = {
+      label, icon, menuGroup: grp, menuSection: sec, nodeClass: cls, pins,
+      create(pos) {
+        const nid  = window.generateNodeId();
+        const name = window.nextUniqueName(id, label);
+        window.createPluginNode(id, nid, pos);
+        const e = document.getElementById(`ename-${nid}`);
+        if (e) e.value = name;
+        return nid;
+      },
+      mount(nid, el) {
+        el.innerHTML =
+          `<div class="node-header${hc}" id="nheader-${nid}">` +
+          `<span class="node-state-dot" id="ndot-${nid}"></span>` +
+          `<input class="node-name" id="ename-${nid}" value="${window.escHtml(label)}"/>` +
+          `<button class="node-delete-btn" onclick="window.removePluginNode('${nid}')">✕</button>` +
+          `</div>` +
+          `<div class="node-body">${bdy}` +
+          `<p style="color:var(--text2);font-size:11px;text-align:center;padding:8px 0;">⚠ 未実装</p>` +
+          `</div>`;
+      },
+      createPanel(nid, c) { c.innerHTML = '<p class="panel-placeholder">⚠ 未実装</p>'; },
+      getMetrics() { return { dotCls: 'node-state-dot', statusCls: 'badge-inactive', statusLabel: '未実装', stats: [] }; },
+      unmount() {},
+    };
+  }
+
+  const fc = 'フェイシャルキャプチャ', mc = 'モーションキャプチャ', ei = '映像', rm = 'リモート操作', ut = 'ユーティリティ';
+  const ll = 'node-card node-livelink', vi = 'node-card node-video';
+  const mf = { label: 'Motion Data', accepts: window.PIN_TYPES.LIVELINK_FACE };
+  const tr = { out: [{ type: window.PIN_TYPES.TRIGGER, label: 'ステータス' }], in: [{ label: 'トリガー', accepts: window.PIN_TYPES.TRIGGER }] };
+
+  mk('cast-livelink', 'LiveLink Face out', '📤', fc, 'LiveLink', ll, { out: [], in: [mf] });
+  mk('cast-vmc',      'VMC out',           '📤', mc, 'VMC',     ll, { out: [], in: [mf] });
+  mk('cast-mocopi',   'mocopi out',        '📤', mc, 'mocopi',  ll, { out: [], in: [mf] });
+
+  mk('virtual-camera', '仮想カメラ',          '📸', ei, '出力', vi, { out: [], in: [{ label: '映像入力', accepts: window.PIN_TYPES.VIDEO }] });
+  mk('preview-window', 'プレビューウィンドウ', '🖼️', ei, '出力', vi, { out: [], in: [{ label: '映像入力', accepts: window.PIN_TYPES.VIDEO }] });
+
+  mk('remote-obs',           'OBS',          '🔴', rm, null, ll, tr);
+  mk('remote-motionbuilder', 'MotionBuilder', '🎞️', rm, null, ll, tr);
+  mk('remote-vicon-shogun',  'ViconShogun',  '🎯', rm, null, ll, tr);
+  mk('remote-aja-kipro',     'Aja Kipro',    '📼', rm, null, ll, tr);
+  mk('remote-blackmagic',    'Blackmagic',   '🎥', rm, null, ll, tr);
+  mk('remote-visca',         'VISCAoverIP',  '🕹️', rm, null, ll, tr);
+  mk('remote-dmx',           'DMX',          '💡', rm, null, ll, tr);
+
+  mk('util-trigger',  'トリガー',   '⚡', ut, null, 'node-card',
+     { out: [{ type: window.PIN_TYPES.TRIGGER, label: 'Out' }], in: [] });
+  mk('util-embed',    'エンベッド', '🔗', ut, null, vi,
+     { out: [{ type: window.PIN_TYPES.VIDEO, label: '映像出力' }], in: [{ label: '映像入力', accepts: window.PIN_TYPES.VIDEO }] });
+  mk('util-override', 'Override',   '✏️', ut, null, ll,
+     { out: [{ type: window.PIN_TYPES.LIVELINK_FACE, label: 'Motion Out' }], in: [{ label: 'Motion In', accepts: window.PIN_TYPES.LIVELINK_FACE }] });
+  mk('util-ltc-in',  'LTC in',  '⏱️', ut, null, 'node-card',
+     { out: [{ type: window.PIN_TYPES.TRIGGER, label: 'TC Out' }], in: [] });
+  mk('util-ltc-out', 'LTC out', '⏱️', ut, null, 'node-card',
+     { out: [], in: [{ label: 'TC In', accepts: window.PIN_TYPES.TRIGGER }] });
+})();
+
+// ── WebRTC broadcaster (ライブ視聴ページ向け) ─────────────────────────────────
+(function () {
+  const _rtcPeers = new Map(); // viewerId → RTCPeerConnection
+
+  function getActiveStreams() {
+    const streams = [];
+    for (const stream of window.nodeStreams.values()) {
+      if (stream instanceof MediaStream && stream.getTracks().some(t => t.readyState === 'live')) {
+        streams.push(stream);
+      }
+    }
+    return streams;
+  }
+
+  socket.on(EVENTS.RTC_VIEWER_JOINED, async ({ viewerId }) => {
+    const streams = getActiveStreams();
+    if (streams.length === 0) return; // 配信中ストリームなし
+    const pc = new RTCPeerConnection({ iceServers: [] });
+    _rtcPeers.set(viewerId, pc);
+    for (const stream of streams) {
+      for (const track of stream.getTracks()) pc.addTrack(track, stream);
+    }
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) socket.emit(EVENTS.RTC_ICE, { targetId: viewerId, candidate });
+    };
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit(EVENTS.RTC_OFFER, { viewerId, sdp: offer });
+  });
+
+  socket.on(EVENTS.RTC_ANSWER, async ({ viewerId, sdp }) => {
+    const pc = _rtcPeers.get(viewerId);
+    if (pc) await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+  });
+
+  socket.on(EVENTS.RTC_ICE, async ({ fromId, candidate }) => {
+    const pc = _rtcPeers.get(fromId);
+    if (pc && candidate) await pc.addIceCandidate(new RTCIceCandidate(candidate));
+  });
+
+  socket.on(EVENTS.RTC_VIEWER_LEFT, ({ viewerId }) => {
+    const pc = _rtcPeers.get(viewerId);
+    if (pc) { pc.close(); _rtcPeers.delete(viewerId); }
+  });
+})();
 
 // Show node list on initial load
 showNodeList();

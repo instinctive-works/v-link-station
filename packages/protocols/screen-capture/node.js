@@ -4,10 +4,14 @@
 window.NodePlugins['screen-capture'] = {
   label:       'スクリーンキャプチャ',
   icon:        '🖥️',
-  menuSection: '映像入力',
+  menuGroup:   '映像',
+  menuSection: '入力',
   nodeClass:   'node-card node-video',
   pins: {
-    out: [{ type: 'video', label: '映像' }],
+    out: [
+      { type: window.PIN_TYPES.VIDEO,      label: '映像' },      // index 0
+      { type: window.PIN_TYPES.WASM_FRAME, label: 'フレーム' }, // index 1
+    ],
     in:  [],
   },
 
@@ -44,9 +48,15 @@ window.NodePlugins['screen-capture'] = {
         ${sourceSelectHtml}
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
           <button class="btn-primary" id="sc-btn-${nodeId}">開始</button>
-          <div class="pin-row pin-out pin-type-video" data-type="video" style="margin:0;">
-            <span class="pin-label">映像</span>
-            <span class="pin-dot"></span>
+          <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end;">
+            <div class="pin-row pin-out pin-type-video" data-type="${window.PIN_TYPES.VIDEO}" style="margin:0;">
+              <span class="pin-label">映像</span>
+              <span class="pin-dot"></span>
+            </div>
+            <div class="pin-row pin-out pin-type-wasm-frame" data-type="${window.PIN_TYPES.WASM_FRAME}" style="margin:0;">
+              <span class="pin-label">フレーム</span>
+              <span class="pin-dot"></span>
+            </div>
           </div>
         </div>
       </div>
@@ -169,6 +179,8 @@ window._screenToggle = async (nodeId) => {
     if (btn) { btn.textContent = '開始'; btn.className = 'btn-primary'; }
     const dot = document.getElementById(`ndot-${nodeId}`);
     if (dot) dot.className = 'node-state-dot';
+    const panelVidStop = document.getElementById(`psc-video-${nodeId}`);
+    if (panelVidStop) panelVidStop.srcObject = null;
     return;
   }
 
@@ -208,6 +220,8 @@ window._screenToggle = async (nodeId) => {
     if (btn) { btn.textContent = '停止'; btn.className = 'btn-danger'; }
     const dot = document.getElementById(`ndot-${nodeId}`);
     if (dot) dot.className = 'node-state-dot state-active';
+    const panelVid = document.getElementById(`psc-video-${nodeId}`);
+    if (panelVid) panelVid.srcObject = stream;
 
     // Resolution
     const track = stream.getVideoTracks()[0];
@@ -224,18 +238,46 @@ window._screenToggle = async (nodeId) => {
     vid.srcObject = stream;
     vid.muted = true;
     vid.play();
-    if (vid.requestVideoFrameCallback) {
-      let last = performance.now(), count = 0;
-      const tick = () => {
-        count++;
-        const now = performance.now();
-        if (now - last >= 1000) {
-          state.fps = (count / ((now - last) / 1000)).toFixed(1);
-          count = 0; last = now;
+    state._vid = vid;
+
+    const oc   = new OffscreenCanvas(1, 1);
+    const octx = oc.getContext('2d');
+    let last = performance.now(), count = 0, seq = 0;
+
+    function onFrame(now) {
+      if (!state.stream) return;
+
+      count++;
+      const elapsed = now - last;
+      if (elapsed >= 1000) {
+        state.fps = (count / (elapsed / 1000)).toFixed(1);
+        count = 0;
+        last = now;
+      }
+
+      if (window.VLinkWasm) {
+        const tr = state.stream.getVideoTracks()[0];
+        const s  = tr ? tr.getSettings() : {};
+        const w  = s.width  || 1280;
+        const h  = s.height || 720;
+        if (oc.width !== w || oc.height !== h) { oc.width = w; oc.height = h; }
+        octx.drawImage(vid, 0, 0, w, h);
+        const imgData = octx.getImageData(0, 0, w, h);
+        const size = w * h * 4;
+        const ptr  = window.VLinkWasm.alloc_frame(size);
+        if (ptr) {
+          new Uint8Array(window.VLinkWasm.memory.buffer, ptr, size).set(imgData.data);
+          window.notifyFrame(nodeId, 1, { ptr, width: w, height: h, stride: w * 4, seq });
+          window.VLinkWasm.free_frame(ptr, size);
+          seq++;
         }
-        if (state.stream) vid.requestVideoFrameCallback(tick);
-      };
-      vid.requestVideoFrameCallback(tick);
+      }
+
+      vid.requestVideoFrameCallback(onFrame);
+    }
+
+    if (vid.requestVideoFrameCallback) {
+      vid.requestVideoFrameCallback(onFrame);
     }
   } catch (err) {
     console.error('Screen capture error:', err);

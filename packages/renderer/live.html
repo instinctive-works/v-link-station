@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ライブ視聴 — V-Link Station</title>
+  <style>
+    :root {
+      --bg:      #0f0f1a;
+      --bg2:     #1a1a2e;
+      --bg3:     #22223a;
+      --border:  #2e2e4a;
+      --text:    #f4f4ff;
+      --text2:   #b8b8d4;
+      --accent:  #5a6aff;
+      --green:   #22c55e;
+      --red:     #ef4444;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      min-height: 100vh;
+    }
+
+    /* ── nav ── */
+    #app-nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 36px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 2px;
+      z-index: 100;
+    }
+    .nav-brand { font-size: 12px; font-weight: 700; color: var(--accent); margin-right: 10px; opacity: 0.85; }
+    .nav-btn {
+      padding: 3px 12px;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      color: var(--text2);
+      font-size: 12px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .nav-btn:hover { color: var(--text); background: var(--bg3); }
+    .nav-btn.active { color: var(--text); background: var(--bg3); border-color: var(--border); }
+
+    /* ── content ── */
+    #content {
+      padding: 52px 16px 16px;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    #toolbar h1 { font-size: 15px; color: var(--text2); font-weight: 600; flex: 1; }
+    #status-dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: var(--text2);
+      flex-shrink: 0;
+    }
+    #status-dot.connecting { background: var(--accent); animation: blink 1s infinite; }
+    #status-dot.live { background: var(--green); }
+    #status-dot.error { background: var(--red); }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    #status-label { font-size: 12px; color: var(--text2); }
+
+    #connect-btn {
+      padding: 5px 14px;
+      background: var(--accent);
+      border: none;
+      border-radius: 4px;
+      color: #fff;
+      font-size: 12px;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    #connect-btn:hover { opacity: 0.85; }
+    #connect-btn:disabled { opacity: 0.4; cursor: default; }
+
+    #video-grid {
+      flex: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-content: flex-start;
+      overflow-y: auto;
+    }
+    .video-tile {
+      background: #000;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      position: relative;
+      min-width: 240px;
+      flex: 1;
+    }
+    .video-tile video {
+      width: 100%;
+      display: block;
+      background: #000;
+    }
+    .video-label {
+      position: absolute;
+      top: 6px; left: 8px;
+      font-size: 11px;
+      color: rgba(255,255,255,0.7);
+      background: rgba(0,0,0,0.5);
+      padding: 2px 6px;
+      border-radius: 3px;
+    }
+    #placeholder {
+      color: var(--text2);
+      text-align: center;
+      padding: 60px 20px;
+      width: 100%;
+    }
+    #placeholder p { margin-top: 8px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <nav id="app-nav">
+    <span class="nav-brand">V-Link Station</span>
+    <a class="nav-btn" href="/">📡 コンソール</a>
+    <a class="nav-btn" href="/takes">🎬 収録一覧</a>
+    <a class="nav-btn active" href="/live">📺 ライブ視聴</a>
+  </nav>
+
+  <div id="content">
+    <div id="toolbar">
+      <h1>📺 ライブ視聴</h1>
+      <span id="status-dot"></span>
+      <span id="status-label">未接続</span>
+      <button id="connect-btn">接続</button>
+    </div>
+    <div id="video-grid">
+      <div id="placeholder">
+        <div style="font-size:36px">📺</div>
+        <p>「接続」ボタンを押すとコンソールのライブ映像を受信します。</p>
+        <p style="margin-top:4px;font-size:12px;color:#666">コンソール側でノードに映像が流れている必要があります。</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/shared/constants.js"></script>
+  <script>
+    const socket = io();
+
+    const dot       = document.getElementById('status-dot');
+    const label     = document.getElementById('status-label');
+    const btn       = document.getElementById('connect-btn');
+    const grid      = document.getElementById('video-grid');
+    const EVENTS    = window.EVENTS;
+
+    let pc = null;
+    let connected = false;
+
+    function setStatus(state, text) {
+      dot.className = state;
+      label.textContent = text;
+    }
+
+    btn.addEventListener('click', () => {
+      if (connected) {
+        disconnect();
+      } else {
+        connect();
+      }
+    });
+
+    function connect() {
+      if (pc) { pc.close(); pc = null; }
+      setStatus('connecting', '接続中...');
+      btn.disabled = true;
+
+      pc = new RTCPeerConnection({ iceServers: [] });
+
+      pc.ontrack = (e) => {
+        const stream = e.streams[0];
+        if (!stream) return;
+        const existing = document.querySelector(`[data-stream="${stream.id}"]`);
+        if (existing) return;
+
+        const tile  = document.createElement('div');
+        tile.className = 'video-tile';
+        tile.dataset.stream = stream.id;
+
+        const lbl = document.createElement('div');
+        lbl.className = 'video-label';
+        lbl.textContent = 'Live';
+
+        const vid = document.createElement('video');
+        vid.autoplay = true;
+        vid.playsInline = true;
+        vid.muted = false;
+        vid.srcObject = stream;
+
+        tile.appendChild(vid);
+        tile.appendChild(lbl);
+
+        const ph = document.getElementById('placeholder');
+        if (ph) ph.remove();
+        grid.appendChild(tile);
+
+        setStatus('live', 'ライブ受信中');
+        connected = true;
+        btn.textContent = '切断';
+        btn.disabled = false;
+      };
+
+      pc.onicecandidate = ({ candidate }) => {
+        if (candidate) {
+          socket.emit(EVENTS.RTC_ICE, { targetId: _broadcasterId, candidate });
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (pc && (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed')) {
+          setStatus('error', '接続が切れました');
+          btn.textContent = '再接続';
+          btn.disabled = false;
+          connected = false;
+        }
+      };
+
+      socket.emit(EVENTS.RTC_VIEWER_JOIN);
+      setStatus('connecting', '配信者を待っています...');
+      btn.disabled = false;
+    }
+
+    function disconnect() {
+      if (pc) { pc.close(); pc = null; }
+      grid.innerHTML = `
+        <div id="placeholder">
+          <div style="font-size:36px">📺</div>
+          <p>「接続」ボタンを押すとコンソールのライブ映像を受信します。</p>
+          <p style="margin-top:4px;font-size:12px;color:#666">コンソール側でノードに映像が流れている必要があります。</p>
+        </div>`;
+      setStatus('', '未接続');
+      btn.textContent = '接続';
+      connected = false;
+    }
+
+    let _broadcasterId = null;
+
+    socket.on(EVENTS.RTC_OFFER, async ({ broadcasterId, sdp }) => {
+      if (!pc) return;
+      _broadcasterId = broadcasterId;
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit(EVENTS.RTC_ANSWER, { broadcasterId, sdp: answer });
+    });
+
+    socket.on(EVENTS.RTC_ICE, async ({ fromId, candidate }) => {
+      if (!pc) return;
+      try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch(_) {}
+    });
+  </script>
+</body>
+</html>

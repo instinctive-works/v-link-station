@@ -7,7 +7,8 @@
   <link rel="stylesheet" href="/mocap.css" />
 </head>
 <body>
-  <!-- ── Main layout ─────────────────────────────────────── -->
+
+  <!-- ── Main layout ─────────────────────────────────────────── -->
   <div id="main-layout">
     <!-- Canvas area -->
     <div id="canvas-area">
@@ -19,10 +20,14 @@
       </div>
     </div>
 
+    <!-- Panel resize handle -->
+    <div id="panel-resize-handle"></div>
+
     <!-- Right panel -->
     <div id="right-panel">
       <div id="panel-header">
-        <span id="panel-title">Inspector</span>
+        <button class="panel-tab active" id="tab-nodes" onclick="window.switchRightTab('nodes')">ノード一覧</button>
+        <button class="panel-tab" id="tab-takes" onclick="window.switchRightTab('takes')">収録一覧</button>
       </div>
       <div id="panel-content">
         <p class="panel-placeholder">ノードを選択してください</p>
@@ -38,6 +43,8 @@
   <script src="/socket.io/socket.io.js"></script>
   <!-- Shared constants (browser mode) -->
   <script src="/shared/constants.js"></script>
+  <!-- WASM video frame processor (async init, starts fetching early) -->
+  <script src="/wasm-video/loader.js"></script>
   <!-- Main canvas infrastructure -->
   <script src="/mocap.js"></script>
 
@@ -46,6 +53,13 @@
   <script src="/protocols/livelink-face/node.js"></script>
   <script src="/protocols/webcam/node.js"></script>
   <script src="/protocols/screen-capture/node.js"></script>
-  <script src="/protocols/stream-output/node.js"></script>
+  <script src="/protocols/video-share/node.js"></script>
+  <script src="/protocols/livelink-mb/node.js"></script>
+  <script src="/protocols/vmc/node.js"></script>
+  <script src="/protocols/mocopi/node.js"></script>
+  <script src="/protocols/video-switch/node.js"></script>
+  <script src="/protocols/countdown/node.js"></script>
+  <script src="/protocols/merge/node.js"></script>
+  <script src="/protocols/override/node.js"></script>
 </body>
 </html>

@@ -30,7 +30,15 @@ packages/
     livelink-face/     parser.js (Node.js) / renderer.js (browser) / node.js (plugin)
     webcam/            node.js
     screen-capture/    node.js
-    stream-output/     node.js
+    video-share/       node.js
+    video-switch/      node.js
+    virtual-camera/    node.js
+    override/           node.js
+    countdown/         node.js
+    merge/             node.js
+    livelink-mb/       node.js
+    vmc/               node.js
+    mocopi/            node.js
     package.json
   shared/              サーバー・クライアント共通定数 (@v-link/shared)
     constants.js
@@ -64,12 +72,12 @@ window.NodePlugins['plugin-id'] = {
   menuSection: 'セクション名',      // 右クリックメニューのグループ
   nodeClass:   'node-card ...',     // ノードカードの CSS クラス
   pins: {
-    out: [{ type: 'video', label: '出力ラベル' }],             // 出力ピン: type が色と型を決める
-    in:  [{ label: '入力ラベル', accepts: 'video' }],          // 入力ピン: accepts で接続可能な型を制限
+    out: [{ type: window.PIN_TYPES.VIDEO, label: '出力ラベル' }],    // 出力ピン: type が色と型を決める
+    in:  [{ label: '入力ラベル', accepts: window.PIN_TYPES.VIDEO }], // 入力ピン: accepts で接続可能な型を制限
   },
   // accepts が未指定の入力ピンは全型を受け入れる
   // accepts に合わない型をドラッグしてもハイライトされず接続できない
-  // accepts="video" の入力ピンは自動でオレンジ色になる
+  // accepts=PIN_TYPES.VIDEO の入力ピンは自動でオレンジ色になる
   create(pos)               { ... },  // 右クリックから呼ばれる
   mount(nodeId, nodeEl)     { ... },  // ノードカード本体を構築
   createPanel(nodeId, cont) { ... },  // 右ペイン詳細パネル。不要なら null
@@ -147,6 +155,7 @@ function nextName() {
 | `generateNodeId()` | function | ユニーク ID 生成 |
 | `registerNodeHandlers(nodeId, handlers)` | function | 接続イベントハンドラー登録 |
 | `unregisterNodeHandlers(nodeId)` | function | 接続イベントハンドラー解除 |
+| `window.fireTrigger(fromNodeId, fromPinIdx)` | function | トリガー信号を下流へ伝播 |
 | `window.escHtml(s)` | function | HTML エスケープ |
 | `window.formatBytes(n)` | function | バイト数フォーマット |
 
@@ -176,19 +185,66 @@ registerNodeHandlers(nodeId, {
 
 `onConnected` は `createConnection` 完了後に呼ばれるため、新しい接続はすでに `window.connections` に存在する。
 
+### トリガー信号の発火
+
+トリガー出力ピンから下流へ信号を送るには `window.fireTrigger` を使う。
+
+```javascript
+// fromPinIdx は pins.out 配列のインデックス
+window.fireTrigger(nodeId, fromPinIdx);
+```
+
+受け取り側のノードは `registerNodeHandlers` で `onTrigger` を登録する：
+
+```javascript
+window.registerNodeHandlers(nodeId, {
+  onTrigger(fromNodeId, toNodeId) {
+    if (toNodeId !== nodeId) return;
+    // トリガー受信時の処理
+  },
+});
+```
+
 ## Recording ノードのルール
 
 - `mocap.js` 内に直書き（`protocols/` に移動しない）
 - LiveLink テイク録画（`.vlnk`）の根幹機能であるため
 - `takeState` オブジェクトで状態管理、`socket.emit('take-start/stop')` でサーバーと同期
 
+## ピン型の管理ルール
+
+すべての `pins:` 定義では **文字列リテラルを直書きせず `window.PIN_TYPES` の定数を使う**。
+
+```javascript
+pins: {
+  out: [{ type: window.PIN_TYPES.VIDEO,   label: '映像出力' }],
+  in:  [{ label: '映像入力', accepts: window.PIN_TYPES.VIDEO }],
+},
+```
+
+### 定義箇所
+
+| 対象 | 場所 |
+|---|---|
+| 基本型（`video` / `trigger` / `livelink-face`） | `shared/constants.js` の `PIN_TYPES` に集約 |
+| プロトコル固有型 | 将来的に `protocols/<name>/` 内で定義し、`PIN_TYPES` には含めない |
+
+`shared/constants.js` はブラウザ側では `window.PIN_TYPES` / `window.EVENTS` としてグローバル公開される（`index.html` で `<script src="/shared/constants.js">` より先に読み込まれている）。
+
+### 新しいピン型を追加する手順
+
+1. `shared/constants.js` の `PIN_TYPES` にエントリ追加
+2. `renderer/mocap.css` に `.pin-type-<name>` のスタイルを追加
+3. 各 `node.js` で `window.PIN_TYPES.<KEY>` を参照
+
 ## ピン型と色
 
-| 型 | 色 | 用途 |
-|---|---|---|
-| `livelink-face` | 青 `#3b82f6` | LiveLink Face データ |
-| `video` | オレンジ `#f97316` | 映像ストリーム |
-| `trigger` | 緑 `#22c55e` | トリガー信号 |
+| 定数 | 値 | 色 | 用途 |
+|---|---|---|---|
+| `PIN_TYPES.VIDEO` | `'video'` | オレンジ `#f97316` | MediaStream 映像 |
+| `PIN_TYPES.TRIGGER` | `'trigger'` | 緑 `#22c55e` | トリガー信号 |
+| `PIN_TYPES.LIVELINK_FACE` | `'livelink-face'` | 青 `#3b82f6` | LiveLink Face データ |
+| `PIN_TYPES.REPLAY` | `'replay'` | 紫 `#a855f7` | リプレイデータ（映像＋モーション内包）|
 
 ## サーバー側プロトコル追加
 
