@@ -1,11 +1,13 @@
 ﻿// VideoSwitch node plugin
-// Two WASM_FRAME inputs (A / B). A button toggles which input is active.
-// The active input's frame token is passed downstream unchanged.
+// Two WASM_FRAME inputs (A / B).
+// Manual mode: button toggles which input is passed downstream.
+// Auto mode:   outputs A while A frames are arriving; falls back to B when A is stale (>300 ms gap).
 window.NodePlugins['video-switch'] = {
-  label:       'VideoSwitch',
+  label:       'スイッチング',
   icon:        '🔀',
-  menuGroup:   'ユーティリティ',
-  menuSection: null,
+  menuGroup:   '映像',
+  menuSection: 'ユーティリティ',
+  menuOrder:   1,
   nodeClass:   'node-card node-video',
   pins: {
     out: [{ type: window.PIN_TYPES.WASM_FRAME, label: 'フレーム出力' }], // index 0
@@ -25,10 +27,38 @@ window.NodePlugins['video-switch'] = {
   },
 
   mount(nodeId, nodeEl) {
-    const state = { active: 'a', srcA: null, srcB: null };
+    const state = {
+      active:        'a',    // manual mode active input
+      srcA:          null,
+      srcB:          null,
+      autoMode:      true,
+      aAlive:        false,  // true while A frames are arriving
+      aAliveTimer:   null,
+      _updateCard:   null,
+      _lastBImgData: null,   // cached last B frame for immediate display on switch
+    };
     window._vSwitchState = window._vSwitchState || {};
     window._vSwitchState[nodeId] = state;
 
+    // ── Node card DOM update ───────────────────────────────────────────────
+    function updateNodeCard() {
+      const arrA = document.getElementById(`vsarr-a-${nodeId}`);
+      const arrB = document.getElementById(`vsarr-b-${nodeId}`);
+      const btn  = document.getElementById(`vs-toggle-${nodeId}`);
+
+      if (state.autoMode) {
+        if (arrA) arrA.style.opacity = state.aAlive  ? '1' : '0';
+        if (arrB) arrB.style.opacity = !state.aAlive ? '1' : '0';
+        if (btn)  { btn.disabled = true;  btn.style.opacity = '0.4'; }
+      } else {
+        if (arrA) arrA.style.opacity = state.active === 'a' ? '1' : '0';
+        if (arrB) arrB.style.opacity = state.active === 'b' ? '1' : '0';
+        if (btn)  { btn.disabled = false; btn.style.opacity = ''; }
+      }
+    }
+    state._updateCard = updateNodeCard;
+
+    // ── Node card HTML ─────────────────────────────────────────────────────
     nodeEl.innerHTML = `
       <div class="node-header node-video" id="nheader-${nodeId}">
         <span class="node-state-dot" id="ndot-${nodeId}"></span>
@@ -36,24 +66,26 @@ window.NodePlugins['video-switch'] = {
         <button class="node-delete-btn" onclick="window.removePluginNode('${nodeId}')">✕</button>
       </div>
       <div class="node-body">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-          <div style="display:flex;flex-direction:column;gap:4px;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;">
             <div class="pin-row pin-in pin-type-wasm-frame" data-accepts="${window.PIN_TYPES.WASM_FRAME}">
               <span class="pin-dot"></span>
-              <span class="pin-label" style="margin-left:6px;" id="vslbl-a-${nodeId}">フレーム A ▶</span>
+              <span class="pin-label" style="margin-left:6px;">映像A<span id="vsarr-a-${nodeId}" style="margin-left:3px;opacity:0;">▶</span></span>
             </div>
             <div class="pin-row pin-in pin-type-wasm-frame" data-accepts="${window.PIN_TYPES.WASM_FRAME}">
               <span class="pin-dot"></span>
-              <span class="pin-label" style="margin-left:6px;" id="vslbl-b-${nodeId}">フレーム B</span>
+              <span class="pin-label" style="margin-left:6px;">映像B<span id="vsarr-b-${nodeId}" style="margin-left:3px;opacity:0;">▶</span></span>
             </div>
           </div>
-          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
-            <button class="btn-secondary" id="vs-toggle-${nodeId}"
+          <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;">
+            <button class="btn-primary" id="vs-toggle-${nodeId}"
               onclick="window._vSwitchToggle('${nodeId}')"
               onmousedown="event.stopPropagation()"
-              style="font-size:11px;padding:3px 8px;">A→B</button>
+              style="width:52px;height:52px;font-size:13px;" disabled>切替</button>
+          </div>
+          <div style="flex-shrink:0;">
             <div class="pin-row pin-out pin-type-wasm-frame" data-type="${window.PIN_TYPES.WASM_FRAME}" style="margin:0;">
-              <span class="pin-label">出力</span>
+              <span class="pin-label">映像</span>
               <span class="pin-dot"></span>
             </div>
           </div>
@@ -61,6 +93,10 @@ window.NodePlugins['video-switch'] = {
       </div>
     `;
 
+    // Apply initial card state (opacity etc.)
+    updateNodeCard();
+
+    // ── Connection / frame handlers ────────────────────────────────────────
     window.registerNodeHandlers(nodeId, {
       onConnected(fromNodeId, toNodeId) {
         if (toNodeId !== nodeId) return;
@@ -76,14 +112,69 @@ window.NodePlugins['video-switch'] = {
       },
       onDisconnected(fromNodeId, toNodeId) {
         if (toNodeId !== nodeId) return;
-        if (state.srcA === fromNodeId) state.srcA = null;
+        if (state.srcA === fromNodeId) {
+          state.srcA = null;
+          if (state.aAliveTimer) { clearTimeout(state.aAliveTimer); state.aAliveTimer = null; }
+          if (state.aAlive) { state.aAlive = false; updateNodeCard(); }
+        }
         if (state.srcB === fromNodeId) state.srcB = null;
       },
       onFrame(token, fromNodeId) {
-        if (state.active === 'a' && fromNodeId === state.srcA) {
-          window.notifyFrame(nodeId, 0, token);
-        } else if (state.active === 'b' && fromNodeId === state.srcB) {
-          window.notifyFrame(nodeId, 0, token);
+        // Helper: draw current frame to preview canvas (if panel is open)
+        function drawPreview(t) {
+          if (!window.VLinkWasm || !state._previewCanvas || !state._previewCanvas.isConnected) return;
+          const ctx = state._previewCanvas.getContext('2d');
+          if (!ctx) return;
+          const { ptr, width, height } = t;
+          const size = width * height * 4;
+          state._previewCanvas.width  = width;
+          state._previewCanvas.height = height;
+          const raw = new Uint8ClampedArray(window.VLinkWasm.memory.buffer, ptr, size);
+          ctx.putImageData(new ImageData(raw.slice(), width, height), 0, 0);
+        }
+
+        if (state.autoMode) {
+          if (fromNodeId === state.srcA) {
+            if (state.aAliveTimer) clearTimeout(state.aAliveTimer);
+            const wasAlive = state.aAlive;
+            state.aAlive = true;
+            if (!wasAlive) updateNodeCard();
+            state.aAliveTimer = setTimeout(() => {
+              state.aAlive = false;
+              updateNodeCard();
+              // Immediately show the last cached B frame if the panel is open
+              if (state._lastBImgData && state._previewCanvas && state._previewCanvas.isConnected) {
+                const ctx = state._previewCanvas.getContext('2d');
+                if (ctx) {
+                  state._previewCanvas.width  = state._lastBImgData.width;
+                  state._previewCanvas.height = state._lastBImgData.height;
+                  ctx.putImageData(state._lastBImgData, 0, 0);
+                }
+              }
+            }, 100);
+            drawPreview(token);
+            window.notifyFrame(nodeId, 0, token);
+          } else if (fromNodeId === state.srcB) {
+            // Always cache the latest B frame so we can show it immediately when A dies
+            if (window.VLinkWasm) {
+              const { ptr, width, height } = token;
+              const size = width * height * 4;
+              const raw = new Uint8ClampedArray(window.VLinkWasm.memory.buffer, ptr, size);
+              state._lastBImgData = new ImageData(raw.slice(), width, height);
+            }
+            if (!state.aAlive) {
+              drawPreview(token);
+              window.notifyFrame(nodeId, 0, token);
+            }
+          }
+        } else {
+          if (state.active === 'a' && fromNodeId === state.srcA) {
+            drawPreview(token);
+            window.notifyFrame(nodeId, 0, token);
+          } else if (state.active === 'b' && fromNodeId === state.srcB) {
+            drawPreview(token);
+            window.notifyFrame(nodeId, 0, token);
+          }
         }
       },
     });
@@ -92,52 +183,91 @@ window.NodePlugins['video-switch'] = {
   createPanel(nodeId, cont) {
     const state = window._vSwitchState && window._vSwitchState[nodeId];
     cont.innerHTML = `
+      <div class="perf-section"></div>
       <div class="perf-section">
-        <div class="perf-section-title">ステータス</div>
-        <div class="stats-row">
-          <span class="stats-lbl">アクティブ</span>
-          <span class="stats-val" id="pvs-active-${nodeId}">A</span>
+        <div class="perf-section-title">モード</div>
+        <div class="stats-row" style="align-items:center;">
+          <input type="checkbox" id="pvs-auto-${nodeId}"
+            ${state && state.autoMode ? 'checked' : ''}
+            style="width:16px;height:16px;accent-color:var(--accent);cursor:pointer;flex-shrink:0;" />
+          <span style="color:var(--text);margin-left:8px;cursor:pointer;"
+            onclick="document.getElementById('pvs-auto-${nodeId}').click()">オートモード</span>
         </div>
-        <div class="stats-row">
-          <span class="stats-lbl">フレーム A</span>
-          <span class="badge badge-inactive" id="pvs-a-${nodeId}">未接続</span>
-        </div>
-        <div class="stats-row">
-          <span class="stats-lbl">フレーム B</span>
-          <span class="badge badge-inactive" id="pvs-b-${nodeId}">未接続</span>
+        <div style="font-size:11px;color:var(--text2);margin-top:4px;">
+          A 入力あり → A出力 / なし → B出力
         </div>
       </div>
-      <div class="perf-section">
-        <div class="perf-section-title">操作</div>
+      <div class="perf-section" id="pvs-manual-section-${nodeId}"
+           style="${state && state.autoMode ? 'opacity:0.4;pointer-events:none;' : ''}">
+        <div class="perf-section-title">手動操作</div>
         <button class="btn-primary" style="width:100%"
           onclick="window._vSwitchToggle('${nodeId}')"
           onmousedown="event.stopPropagation()">A / B 切り替え</button>
       </div>
+      <div class="perf-section">
+        <div class="perf-section-title">プレビュー</div>
+        <canvas id="pvs-preview-${nodeId}"
+          style="width:100%;border-radius:6px;background:#000;display:block;"></canvas>
+      </div>
     `;
-    const timer = setInterval(() => {
-      if (!state) return;
-      const actEl = document.getElementById(`pvs-active-${nodeId}`);
-      const aEl   = document.getElementById(`pvs-a-${nodeId}`);
-      const bEl   = document.getElementById(`pvs-b-${nodeId}`);
-      if (actEl) actEl.textContent = state.active.toUpperCase();
-      if (aEl) { aEl.textContent = state.srcA ? '接続済' : '未接続'; aEl.className = 'badge ' + (state.srcA ? 'badge-active' : 'badge-inactive'); }
-      if (bEl) { bEl.textContent = state.srcB ? '接続済' : '未接続'; bEl.className = 'badge ' + (state.srcB ? 'badge-active' : 'badge-inactive'); }
-    }, 300);
-    cont._cleanupTimer = timer;
+
+    // Set preview canvas reference
+    if (state) {
+      state._previewCanvas = document.getElementById(`pvs-preview-${nodeId}`);
+    }
+
+    // Auto mode checkbox
+    const chk = document.getElementById(`pvs-auto-${nodeId}`);
+    if (chk && state) {
+      chk.addEventListener('change', () => {
+        state.autoMode = chk.checked;
+        if (!state.autoMode) {
+          if (state.aAliveTimer) { clearTimeout(state.aAliveTimer); state.aAliveTimer = null; }
+          state.aAlive = false;
+        }
+        if (state._updateCard) state._updateCard();
+        const manSec = document.getElementById(`pvs-manual-section-${nodeId}`);
+        if (manSec) manSec.style.cssText = state.autoMode ? 'opacity:0.4;pointer-events:none;' : '';
+      });
+    }
+  },
+
+  getSettings(nodeId) {
+    const state = window._vSwitchState && window._vSwitchState[nodeId];
+    return { autoMode: state ? state.autoMode : true, active: state ? state.active : 'a' };
+  },
+
+  applySettings(nodeId, s) {
+    const state = window._vSwitchState && window._vSwitchState[nodeId];
+    if (!state) return;
+    if (s.autoMode != null) state.autoMode = s.autoMode;
+    if (s.active   != null) state.active   = s.active;
   },
 
   getMetrics(nodeId) {
     const state = window._vSwitchState && window._vSwitchState[nodeId];
-    const active = !!(state && (state.srcA || state.srcB));
+    const connected = !!(state && (state.srcA || state.srcB));
+    let statusLabel;
+    if (!connected)          statusLabel = '未接続';
+    else if (state.autoMode) statusLabel = state.aAlive ? 'AUTO:A' : 'AUTO:B';
+    else                     statusLabel = `手動:${state.active.toUpperCase()}`;
     return {
-      dotCls:      active ? 'node-state-dot state-active' : 'node-state-dot',
-      statusCls:   active ? 'badge-active' : 'badge-inactive',
-      statusLabel: active ? `Active:${state ? state.active.toUpperCase() : '-'}` : '未接続',
-      stats: [],
+      dotCls:      connected ? 'node-state-dot state-active' : 'node-state-dot',
+      statusCls:   connected ? 'badge-active' : 'badge-inactive',
+      statusLabel,
+      stats: [
+        { lbl: '映像A', val: state && state.srcA ? '接続済' : '未接続' },
+        { lbl: '映像B', val: state && state.srcB ? '接続済' : '未接続' },
+      ],
     };
   },
 
   unmount(nodeId) {
+    const state = window._vSwitchState && window._vSwitchState[nodeId];
+    if (state) {
+      if (state.aAliveTimer) clearTimeout(state.aAliveTimer);
+      state._previewCanvas = null;
+    }
     window.unregisterNodeHandlers(nodeId);
     if (window._vSwitchState) delete window._vSwitchState[nodeId];
   },
@@ -145,12 +275,10 @@ window.NodePlugins['video-switch'] = {
 
 window._vSwitchToggle = (nodeId) => {
   const state = window._vSwitchState && window._vSwitchState[nodeId];
-  if (!state) return;
+  if (!state || state.autoMode) return;
   state.active = state.active === 'a' ? 'b' : 'a';
-  const lblA = document.getElementById(`vslbl-a-${nodeId}`);
-  const lblB = document.getElementById(`vslbl-b-${nodeId}`);
-  if (lblA) lblA.textContent = 'フレーム A' + (state.active === 'a' ? ' ▶' : '');
-  if (lblB) lblB.textContent = 'フレーム B' + (state.active === 'b' ? ' ▶' : '');
-  const dot = document.getElementById(`ndot-${nodeId}`);
-  if (dot) dot.className = 'node-state-dot state-active';
+  const arrA = document.getElementById(`vsarr-a-${nodeId}`);
+  const arrB = document.getElementById(`vsarr-b-${nodeId}`);
+  if (arrA) arrA.style.opacity = state.active === 'a' ? '1' : '0';
+  if (arrB) arrB.style.opacity = state.active === 'b' ? '1' : '0';
 };

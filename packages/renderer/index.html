@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>V-Link Station</title>
-  <link rel="stylesheet" href="/mocap.css" />
+  <link rel="stylesheet" href="/console.css" />
 </head>
 <body>
 
@@ -28,6 +28,7 @@
       <div id="panel-header">
         <button class="panel-tab active" id="tab-nodes" onclick="window.switchRightTab('nodes')">ノード一覧</button>
         <button class="panel-tab" id="tab-takes" onclick="window.switchRightTab('takes')">収録一覧</button>
+        <button class="panel-tab" id="tab-settings" onclick="window.switchRightTab('settings')">設定</button>
       </div>
       <div id="panel-content">
         <p class="panel-placeholder">ノードを選択してください</p>
@@ -46,7 +47,7 @@
   <!-- WASM video frame processor (async init, starts fetching early) -->
   <script src="/wasm-video/loader.js"></script>
   <!-- Main canvas infrastructure -->
-  <script src="/mocap.js"></script>
+  <script src="/console.js"></script>
 
   <!-- Node plugins -->
   <script src="/protocols/livelink-face/renderer.js"></script>
@@ -61,5 +62,8 @@
   <script src="/protocols/countdown/node.js"></script>
   <script src="/protocols/merge/node.js"></script>
   <script src="/protocols/override/node.js"></script>
+  <script src="/protocols/visca-over-ip/node.js"></script>
+  <script src="/protocols/preview-window/node.js"></script>
+  <script src="/protocols/virtual-camera/node.js"></script>
 </body>
 </html>

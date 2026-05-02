@@ -1,0 +1,4 @@
+LIBRARY vcam-source
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE

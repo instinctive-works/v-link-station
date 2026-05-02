@@ -4,6 +4,22 @@
   // nodeId → { seconds, running, remaining, secondStartTime, canvas, ctx, stream, intervalId, drawTimerId }
   window._cdState = window._cdState || {};
 
+  // ── WASM frame emission ────────────────────────────────────────────────────
+  function cdEmitFrame(nodeId) {
+    if (!window.VLinkWasm) return;
+    const st = window._cdState[nodeId];
+    if (!st || !st.running || st.remaining <= 0) return;
+    const { canvas, ctx } = st;
+    const w = canvas.width, h = canvas.height;
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const size = w * h * 4;
+    const ptr = window.VLinkWasm.alloc_frame(size);
+    if (!ptr) return;
+    new Uint8Array(window.VLinkWasm.memory.buffer, ptr, size).set(imgData.data);
+    window.notifyFrame(nodeId, 1, { ptr, width: w, height: h, stride: w * 4, seq: st.frameSeq++ });
+    window.VLinkWasm.free_frame(ptr, size);
+  }
+
   // ── Canvas drawing ─────────────────────────────────────────────────────────
   function cdDraw(nodeId) {
     const st = window._cdState[nodeId];
@@ -90,6 +106,19 @@
     }
   }
 
+  // ── Send a black (zero) WASM frame to clear downstream Merge buffers ───────
+  function cdSendBlackFrame(nodeId) {
+    if (!window.VLinkWasm) return;
+    const st = window._cdState[nodeId];
+    if (!st || !st.canvas) return;
+    const w = st.canvas.width, h = st.canvas.height;
+    const size = w * h * 4;
+    const ptr  = window.VLinkWasm.alloc_frame(size); // zero-init = transparent black
+    if (!ptr) return;
+    window.notifyFrame(nodeId, 1, { ptr, width: w, height: h, stride: w * 4, seq: st.frameSeq++ });
+    window.VLinkWasm.free_frame(ptr, size);
+  }
+
   // ── Toggle (Start / Stop) ──────────────────────────────────────────────────
   window._cdToggle = function (nodeId) {
     const st = window._cdState[nodeId];
@@ -102,6 +131,7 @@
       st.running    = false;
       st.remaining  = 0;
       cdUpdateNode(nodeId);
+      cdSendBlackFrame(nodeId); // clear downstream Merge buffer
       return;
     }
 
@@ -117,11 +147,13 @@
       cdUpdateNode(nodeId);
 
       if (st.remaining <= 0) {
-        // Fire trigger at pin index 1 (trigger pin)
-        window.fireTrigger(nodeId, 1);
+        // Fire trigger at pin index 0 (trigger pin) with bool:true to start recording
+        window.fireTrigger(nodeId, 0, { bool: true });
 
         clearInterval(st.intervalId);
         st.intervalId = null;
+
+        cdSendBlackFrame(nodeId); // clear downstream Merge buffer immediately
 
         // 1 秒後にスタンバイへ戻る（0は表示しない）
         setTimeout(() => {
@@ -137,15 +169,15 @@
 
   // ── Plugin registration ────────────────────────────────────────────────────
   window.NodePlugins['countdown'] = {
-    label:       'Countdown',
+    label:       'カウントダウン',
     icon:        '⏳',
     menuGroup:   'ユーティリティ',
     menuSection: null,
     nodeClass:   'node-card node-video',
     pins: {
       out: [
-        { type: window.PIN_TYPES.VIDEO,   label: '映像'     },
-        { type: window.PIN_TYPES.TRIGGER, label: 'トリガー' },
+        { type: window.PIN_TYPES.WASM_FRAME, label: 'フレーム'  },
+        { type: window.PIN_TYPES.TRIGGER,    label: 'トリガー' },
       ],
       in: [{ label: '開始', accepts: window.PIN_TYPES.TRIGGER }],
     },
@@ -160,12 +192,10 @@
     },
 
     mount(nodeId, nodeEl) {
-      // Offscreen canvas → MediaStream
       const canvas = document.createElement('canvas');
       canvas.width  = 640;
       canvas.height = 360;
       const ctx    = canvas.getContext('2d');
-      const stream = canvas.captureStream(30);
 
       const state = {
         seconds:         5,
@@ -174,15 +204,14 @@
         secondStartTime: 0,
         canvas,
         ctx,
-        stream,
+        frameSeq:        0,
         intervalId:      null,
         drawTimerId:     null,
       };
       window._cdState[nodeId] = state;
-      window.nodeStreams.set(nodeId, stream);
 
-      // Keep stream alive at ~30 fps
-      state.drawTimerId = setInterval(() => cdDraw(nodeId), 1000 / 30);
+      // Draw + emit frames at ~30 fps
+      state.drawTimerId = setInterval(() => { cdDraw(nodeId); cdEmitFrame(nodeId); }, 1000 / 30);
       cdDraw(nodeId);
 
       nodeEl.innerHTML = `
@@ -207,9 +236,9 @@
                 <span class="pin-label">トリガー</span>
                 <span class="pin-dot"></span>
               </div>
-              <div class="pin-row pin-out pin-type-video" data-type="video"
+              <div class="pin-row pin-out pin-type-wasm-frame" data-type="wasm-frame"
                    style="margin:0;justify-content:flex-end;">
-                <span class="pin-label">映像</span>
+                <span class="pin-label">フレーム</span>
                 <span class="pin-dot"></span>
               </div>
             </div>
@@ -298,10 +327,22 @@
       cont._cleanupTimer = timer;
     },
 
+    getSettings(nodeId) {
+      const state = window._cdState[nodeId];
+      return { seconds: state ? state.seconds : 5 };
+    },
+
+    applySettings(nodeId, s) {
+      const state = window._cdState[nodeId];
+      if (!state || s.seconds == null) return;
+      state.seconds = s.seconds;
+      const inp = document.getElementById(`pcd-sec-${nodeId}`);
+      if (inp) inp.value = s.seconds;
+    },
+
     getMetrics(nodeId) {
       const state   = window._cdState[nodeId];
       const running = !!(state && state.running && state.remaining > 0);
-      const standby = !running; // Startボタン表示中
       return {
         dotCls:      running ? 'node-state-dot state-orange' : 'node-state-dot state-active',
         statusCls:   running ? 'badge-orange' : 'badge-active',
@@ -317,7 +358,6 @@
         if (state.drawTimerId) clearInterval(state.drawTimerId);
         delete window._cdState[nodeId];
       }
-      window.nodeStreams.delete(nodeId);
       window.unregisterNodeHandlers(nodeId);
     },
   };

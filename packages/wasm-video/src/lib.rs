@@ -48,6 +48,87 @@ pub extern "C" fn copy_frame(src: *const u8, dst: *mut u8, len: usize) {
     unsafe { std::ptr::copy_nonoverlapping(src, dst, len) };
 }
 
+/// Nearest-neighbour scale of an RGBA frame from (src_w × src_h) to (dst_w × dst_h).
+/// `dst` must be pre-allocated with dst_w * dst_h * 4 bytes.
+#[no_mangle]
+pub extern "C" fn scale_frame(
+    src: *const u8, src_w: u32, src_h: u32,
+    dst: *mut u8,   dst_w: u32, dst_h: u32,
+) {
+    if src.is_null() || dst.is_null()
+        || src_w == 0 || src_h == 0
+        || dst_w == 0 || dst_h == 0
+    {
+        return;
+    }
+    let src_buf = unsafe { std::slice::from_raw_parts(src, (src_w * src_h * 4) as usize) };
+    let dst_buf = unsafe { std::slice::from_raw_parts_mut(dst, (dst_w * dst_h * 4) as usize) };
+
+    for dy in 0..dst_h {
+        let sy = (dy * src_h / dst_h) as usize;
+        for dx in 0..dst_w {
+            let sx = (dx * src_w / dst_w) as usize;
+            let si = (sy * src_w as usize + sx) * 4;
+            let di = (dy as usize * dst_w as usize + dx as usize) * 4;
+            dst_buf[di]     = src_buf[si];
+            dst_buf[di + 1] = src_buf[si + 1];
+            dst_buf[di + 2] = src_buf[si + 2];
+            dst_buf[di + 3] = src_buf[si + 3];
+        }
+    }
+}
+
+/// Additive blend two RGBA frame buffers into `ptr_out`.
+/// Each channel is clamped to 255.  Output alpha is always 255.
+#[no_mangle]
+pub extern "C" fn add_frames(
+    ptr_a: *const u8,
+    ptr_b: *const u8,
+    ptr_out: *mut u8,
+    len: usize,
+) {
+    if ptr_a.is_null() || ptr_b.is_null() || ptr_out.is_null() || len < 4 {
+        return;
+    }
+    let a   = unsafe { std::slice::from_raw_parts(ptr_a, len) };
+    let b   = unsafe { std::slice::from_raw_parts(ptr_b, len) };
+    let out = unsafe { std::slice::from_raw_parts_mut(ptr_out, len) };
+
+    let pixels = len / 4;
+    for i in 0..pixels {
+        let j = i * 4;
+        out[j]     = ((a[j]     as u32 + b[j]     as u32).min(255)) as u8;
+        out[j + 1] = ((a[j + 1] as u32 + b[j + 1] as u32).min(255)) as u8;
+        out[j + 2] = ((a[j + 2] as u32 + b[j + 2] as u32).min(255)) as u8;
+        out[j + 3] = 255;
+    }
+}
+
+/// Difference blend: `|A - B|` per channel.  Output alpha is always 255.
+#[no_mangle]
+pub extern "C" fn diff_frames(
+    ptr_a: *const u8,
+    ptr_b: *const u8,
+    ptr_out: *mut u8,
+    len: usize,
+) {
+    if ptr_a.is_null() || ptr_b.is_null() || ptr_out.is_null() || len < 4 {
+        return;
+    }
+    let a   = unsafe { std::slice::from_raw_parts(ptr_a, len) };
+    let b   = unsafe { std::slice::from_raw_parts(ptr_b, len) };
+    let out = unsafe { std::slice::from_raw_parts_mut(ptr_out, len) };
+
+    let pixels = len / 4;
+    for i in 0..pixels {
+        let j = i * 4;
+        out[j]     = (a[j]     as i16 - b[j]     as i16).unsigned_abs() as u8;
+        out[j + 1] = (a[j + 1] as i16 - b[j + 1] as i16).unsigned_abs() as u8;
+        out[j + 2] = (a[j + 2] as i16 - b[j + 2] as i16).unsigned_abs() as u8;
+        out[j + 3] = 255;
+    }
+}
+
 /// Alpha-blend two RGBA frame buffers into `ptr_out`.
 ///
 /// `alpha_256`: 0 → 100 % A,  256 → 100 % B,  128 → 50/50 mix.

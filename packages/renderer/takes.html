@@ -91,22 +91,6 @@
     .badge-video { color: var(--orange); border-color: var(--orange); background: rgba(249,115,22,.1); }
     .badge-mocap { color: #3b82f6; border-color: #3b82f6; background: rgba(59,130,246,.1); }
     .badge-size { color: var(--text2); border-color: var(--border); background: transparent; }
-    .take-actions { display: flex; gap: 6px; }
-    .dl-btn {
-      padding: 4px 10px;
-      background: var(--bg3);
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      color: var(--text2);
-      font-size: 11px;
-      cursor: pointer;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      transition: color 0.15s, border-color 0.15s;
-    }
-    .dl-btn:hover { color: var(--text); border-color: var(--accent); }
 
     #empty { color: var(--text2); text-align: center; padding: 40px; }
     #loading { color: var(--text2); text-align: center; padding: 40px; }
@@ -156,17 +140,10 @@
           const mocapBadge = t.hasMocap
             ? `<span class="badge badge-mocap">🤸 モーション</span><span class="badge badge-size">${formatBytes(t.mocapSize)}</span>`
             : '';
-          const videoBtn = t.hasVideo
-            ? `<a class="dl-btn" href="/api/takes/${encodeURIComponent(t.id)}/video.webm" download>⬇ 映像</a>`
-            : '';
-          const mocapBtn = t.hasMocap
-            ? `<a class="dl-btn" href="/api/takes/${encodeURIComponent(t.id)}/mocap.vlnk" download>⬇ モーション</a>`
-            : '';
           return `
             <div class="take-card">
               <div class="take-id">${formatTakeId(t.id)}</div>
               <div class="take-badges">${videoBadge}${mocapBadge}</div>
-              <div class="take-actions">${videoBtn}${mocapBtn}</div>
             </div>`;
         }).join('');
       } catch (e) {

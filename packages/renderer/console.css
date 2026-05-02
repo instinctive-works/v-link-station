@@ -90,7 +90,6 @@ html, body {
 #main-layout {
   display: flex;
   height: 100vh;
-  padding-top: 36px;
   overflow: hidden;
 }
 
@@ -584,21 +583,5 @@ label { color: var(--text2); display: block; margin-bottom: 3px; }
   color: var(--text);
 }
 .take-item-badges { display: flex; gap: 4px; flex-wrap: wrap; }
-.take-item-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .badge-video { background: rgba(249,115,22,.12); color: var(--orange); }
 .badge-mocap { background: rgba(59,130,246,.12); color: var(--blue); }
-.dl-btn {
-  padding: 3px 8px;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  color: var(--text2);
-  font-size: 11px;
-  cursor: pointer;
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  transition: color 0.15s, border-color 0.15s;
-}
-.dl-btn:hover { color: var(--text); border-color: var(--accent); }

@@ -184,9 +184,11 @@ window.removePluginNode = (nodeId) => {
 };
 
 // ── Selection ─────────────────────────────────────────────────────────────────
+let _rightActiveTab = 'nodes';
 let selectedNodeId = null;
 
 function selectNode(nodeId) {
+  if (selectedNodeId === nodeId) return;
   if (selectedNodeId) {
     const prev = document.getElementById(selectedNodeId);
     if (prev) prev.classList.remove('selected');
@@ -200,7 +202,7 @@ function selectNode(nodeId) {
 window.selectNode = selectNode;
 
 function showNodePanel(nodeId) {
-  _activateTab('nodes');
+  if (_rightActiveTab !== 'nodes') return;
   const info = nodeRegistry.get(nodeId);
   if (!info) return;
   const plugin = window.NodePlugins[info.pluginId];
@@ -219,7 +221,7 @@ function showNodePanel(nodeId) {
 }
 
 function showNodeList() {
-  _activateTab('nodes');
+  if (_rightActiveTab !== 'nodes') return;
   const titleEl   = document.getElementById('panel-title');
   const contentEl = document.getElementById('panel-content');
   if (titleEl) titleEl.textContent = 'ノード一覧';
@@ -265,6 +267,7 @@ function showNodeList() {
 }
 
 function _activateTab(name) {
+  _rightActiveTab = name;
   document.querySelectorAll('.panel-tab').forEach(t =>
     t.classList.toggle('active', t.id === 'tab-' + name));
 }
@@ -273,6 +276,7 @@ window.switchRightTab = function switchRightTab(name) {
   _activateTab(name);
   if (name === 'nodes') showNodeList();
   else if (name === 'takes') loadTakesPanel();
+  else if (name === 'settings') showSettingsPanel();
 };
 
 async function loadTakesPanel() {
@@ -294,12 +298,9 @@ async function loadTakesPanel() {
     for (const t of takes) {
       const videoBadge = t.hasVideo ? `<span class="badge badge-video">映像</span>` : '';
       const mocapBadge = t.hasMocap ? `<span class="badge badge-mocap">モーション</span>` : '';
-      const videoBtn   = t.hasVideo ? `<a class="dl-btn" href="/api/takes/${encodeURIComponent(t.id)}/video.webm" download>⬇ 映像</a>` : '';
-      const mocapBtn   = t.hasMocap ? `<a class="dl-btn" href="/api/takes/${encodeURIComponent(t.id)}/mocap.vlnk" download>⬇ モーション</a>` : '';
       html += `<div class="take-item">
         <div class="take-item-id">${window.escHtml(fmtId(t.id))}</div>
         <div class="take-item-badges">${videoBadge}${mocapBadge}</div>
-        <div class="take-item-actions">${videoBtn}${mocapBtn}</div>
       </div>`;
     }
     html += '</div>';
@@ -308,6 +309,170 @@ async function loadTakesPanel() {
     contentEl.innerHTML = `<p class="panel-placeholder">エラー: ${window.escHtml(e.message)}</p>`;
   }
 }
+
+// ── Scene management ───────────────────────────────────────────────────────
+function captureScene(name) {
+  const nodes = [];
+  for (const [nid, info] of nodeRegistry) {
+    const plugin  = window.NodePlugins[info.pluginId];
+    const nameEl  = info.el.querySelector('.node-name');
+    const settings = (plugin && plugin.getSettings) ? plugin.getSettings(nid) : null;
+    nodes.push({ id: nid, pluginId: info.pluginId,
+      x: info.el.offsetLeft, y: info.el.offsetTop,
+      name: nameEl ? nameEl.value : '', settings });
+  }
+  return {
+    name:        name || 'シーン',
+    savedAt:     new Date().toISOString(),
+    nodes,
+    connections: [...window.connections.values()].map(c => ({ ...c })),
+    view:        { ...viewTransform },
+  };
+}
+
+function applyScene(data) {
+  for (const nid of [...nodeRegistry.keys()]) window.removePluginNode(nid);
+  for (const n of (data.nodes || [])) {
+    if (!window.NodePlugins[n.pluginId]) continue;
+    window.createPluginNode(n.pluginId, n.id, { x: n.x, y: n.y });
+    const el = document.getElementById(n.id);
+    if (el && n.name) { const ne = el.querySelector('.node-name'); if (ne) ne.value = n.name; }
+    const plugin = window.NodePlugins[n.pluginId];
+    if (n.settings && plugin && plugin.applySettings) plugin.applySettings(n.id, n.settings);
+  }
+  for (const c of (data.connections || [])) {
+    if (nodeRegistry.has(c.fromNodeId) && nodeRegistry.has(c.toNodeId))
+      createConnection(c.fromNodeId, c.fromPinIdx, c.toNodeId, c.toPinIdx, c.type);
+  }
+  if (data.view) {
+    viewTransform.tx = data.view.tx || 0;
+    viewTransform.ty = data.view.ty || 0;
+    viewTransform.s  = data.view.s  || 1;
+    applyViewTransform();
+  }
+}
+
+function _getSavedScenes() {
+  try { return JSON.parse(localStorage.getItem('vlnk_scenes') || '[]'); } catch { return []; }
+}
+function _saveScenesList(arr) { localStorage.setItem('vlnk_scenes', JSON.stringify(arr)); }
+
+// 現在選択中のシーンインデックス。-1 = デフォルト（未保存）
+let _currentSceneIdx = (() => {
+  try { const v = parseInt(localStorage.getItem('vlnk_scene_idx')); return isNaN(v) ? -1 : v; } catch { return -1; }
+})();
+function _setCurrentSceneIdx(idx) {
+  _currentSceneIdx = idx;
+  try { localStorage.setItem('vlnk_scene_idx', String(idx)); } catch {}
+}
+
+function showSettingsPanel() {
+  const contentEl = document.getElementById('panel-content');
+  if (!contentEl) return;
+  const scenes = _getSavedScenes();
+  const today  = new Date().toLocaleDateString('ja-JP', { month: '2-digit', day: '2-digit' }).replace('/', '-');
+  const hasScene = _currentSceneIdx >= 0 && _currentSceneIdx < scenes.length;
+
+  // ── ドロップダウン選択肢を組み立て ──
+  let options = `<option value="-1"${_currentSceneIdx === -1 ? ' selected' : ''}>― デフォルト（未保存）―</option>`;
+  scenes.forEach((s, i) => {
+    const dt = new Date(s.savedAt).toLocaleString('ja-JP', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    options += `<option value="${i}"${_currentSceneIdx === i ? ' selected' : ''}>${window.escHtml(s.name)}　(${dt})</option>`;
+  });
+
+  const html = `
+  <div class="perf-section">
+    <div class="perf-section-title">シーン管理</div>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <select id="scene-select" style="flex:1;min-width:0;"
+        onmousedown="event.stopPropagation()">${options}</select>
+      <button id="scene-overwrite-btn" class="btn-primary"
+        style="white-space:nowrap;padding:4px 10px;flex-shrink:0;"
+        ${hasScene ? '' : 'disabled'}>保存</button>
+    </div>
+    <div style="text-align:right;margin-top:4px;">
+      <button id="scene-delete-btn"
+        style="font-size:11px;background:none;border:none;cursor:pointer;color:var(--danger);padding:0;"
+        ${hasScene ? '' : 'disabled'}>現在のシーンを削除</button>
+    </div>
+  </div>
+  <div class="perf-section">
+    <div class="perf-section-title">別名で保存</div>
+    <div style="display:flex;gap:6px;">
+      <input id="scene-name-input" type="text" placeholder="シーン名" style="flex:1;" value="シーン_${today}">
+      <button id="scene-save-btn" class="btn-primary" style="white-space:nowrap;padding:4px 10px;">別名保存</button>
+    </div>
+  </div>`;
+
+  contentEl.innerHTML = html;
+
+  // ドロップダウン変更
+  document.getElementById('scene-select').addEventListener('change', (e) => {
+    const val = parseInt(e.target.value);
+    if (val === -1) {
+      // Recording ノード以外を削除してデフォルト状態に戻す
+      for (const [nid, info] of [...nodeRegistry.entries()]) {
+        if (info.pluginId !== 'recording') window.removePluginNode(nid);
+      }
+      viewTransform.tx = 0; viewTransform.ty = 0; viewTransform.s = 1;
+      applyViewTransform();
+      _setCurrentSceneIdx(-1);
+      _activateTab('nodes');
+      showNodeList();
+    } else {
+      window._sceneLoad(val);
+    }
+  });
+
+  // 保存（上書き）
+  document.getElementById('scene-overwrite-btn').addEventListener('click', () => {
+    if (_currentSceneIdx < 0) return;
+    const arr = _getSavedScenes();
+    if (!arr[_currentSceneIdx]) return;
+    arr[_currentSceneIdx] = captureScene(arr[_currentSceneIdx].name);
+    _saveScenesList(arr);
+    showSettingsPanel();
+  });
+
+  // 現在のシーンを削除
+  document.getElementById('scene-delete-btn').addEventListener('click', () => {
+    if (_currentSceneIdx < 0) return;
+    const arr = _getSavedScenes();
+    arr.splice(_currentSceneIdx, 1);
+    _setCurrentSceneIdx(-1);
+    _saveScenesList(arr);
+    showSettingsPanel();
+  });
+
+  // 別名保存
+  document.getElementById('scene-save-btn').addEventListener('click', () => {
+    const ne   = document.getElementById('scene-name-input');
+    const name = (ne && ne.value.trim()) || 'シーン';
+    const arr  = _getSavedScenes();
+    arr.push(captureScene(name));
+    _setCurrentSceneIdx(arr.length - 1);
+    _saveScenesList(arr);
+    showSettingsPanel();
+  });
+}
+
+window._sceneLoad = function(idx) {
+  const arr = _getSavedScenes();
+  if (!arr[idx]) return;
+  applyScene(arr[idx]);
+  _setCurrentSceneIdx(idx);
+  _activateTab('nodes');
+  showNodeList();
+};
+
+window._sceneDelete = function(idx) {
+  const arr = _getSavedScenes();
+  arr.splice(idx, 1);
+  if (_currentSceneIdx === idx) _setCurrentSceneIdx(-1);
+  else if (_currentSceneIdx > idx) _setCurrentSceneIdx(_currentSceneIdx - 1);
+  _saveScenesList(arr);
+  showSettingsPanel();
+};
 
 // ── Drag nodes ────────────────────────────────────────────────────────────────
 function makeDraggable(el, nodeId) {
@@ -447,12 +612,13 @@ window.removeConnectionsForNode = (nodeId) => {
 };
 
 // Fire a trigger signal from fromNodeId's output pin at fromPinIdx
-// Calls onTrigger(fromNodeId, toNodeId) on all connected downstream nodes
-window.fireTrigger = (fromNodeId, fromPinIdx) => {
+// payload: optional { bool, st } — bool=true→start, bool=false→stop, st=take name override
+// Calls onTrigger(fromNodeId, toNodeId, payload) on all connected downstream nodes
+window.fireTrigger = (fromNodeId, fromPinIdx, payload = {}) => {
   for (const conn of window.connections.values()) {
     if (conn.fromNodeId !== fromNodeId || conn.fromPinIdx !== fromPinIdx) continue;
     const handler = nodeHandlers.get(conn.toNodeId);
-    if (handler && handler.onTrigger) handler.onTrigger(fromNodeId, conn.toNodeId);
+    if (handler && handler.onTrigger) handler.onTrigger(fromNodeId, conn.toNodeId, payload);
   }
 };
 
@@ -461,6 +627,14 @@ window.fireTrigger = (fromNodeId, fromPinIdx) => {
 // token: { ptr, width, height, stride, seq }
 // The ptr is valid for the duration of this synchronous call chain;
 // the caller (source node) frees it immediately after this returns.
+window.notifyMocap = (fromNodeId, fromPinIdx, data) => {
+  for (const conn of window.connections.values()) {
+    if (conn.fromNodeId !== fromNodeId || conn.fromPinIdx !== fromPinIdx) continue;
+    const handler = nodeHandlers.get(conn.toNodeId);
+    if (handler && handler.onMocap) handler.onMocap(data, fromNodeId, conn.toNodeId);
+  }
+};
+
 window.notifyFrame = (fromNodeId, fromPinIdx, token) => {
   for (const conn of window.connections.values()) {
     if (conn.fromNodeId !== fromNodeId || conn.fromPinIdx !== fromPinIdx) continue;
@@ -747,9 +921,9 @@ function showContextMenu(x, y) {
         });
         body.appendChild(secH);
         body.appendChild(secB);
-        for (const { plugin } of [...items].sort((a,b) => a.plugin.label.localeCompare(b.plugin.label, 'ja'))) secB.appendChild(_ctxMakeItem(plugin, x, y));
+        for (const { plugin } of [...items].sort((a,b) => { const oa = a.plugin.menuOrder ?? 99, ob = b.plugin.menuOrder ?? 99; if (oa !== ob) return oa - ob; return a.plugin.label.localeCompare(b.plugin.label, 'ja'); })) secB.appendChild(_ctxMakeItem(plugin, x, y));
       } else {
-        for (const { plugin } of [...items].sort((a,b) => a.plugin.label.localeCompare(b.plugin.label, 'ja'))) body.appendChild(_ctxMakeItem(plugin, x, y));
+        for (const { plugin } of [...items].sort((a,b) => { const oa = a.plugin.menuOrder ?? 99, ob = b.plugin.menuOrder ?? 99; if (oa !== ob) return oa - ob; return a.plugin.label.localeCompare(b.plugin.label, 'ja'); })) body.appendChild(_ctxMakeItem(plugin, x, y));
       }
     }
   }
@@ -892,7 +1066,7 @@ document.getElementById('canvas-area').addEventListener('click', (e) => {
 
 // ── Performance panel refresh ─────────────────────────────────────────────────
 setInterval(() => {
-  // Update state dots for all nodes regardless of selection
+  // Update state dots for all nodes regardless of tab
   for (const [nid, info] of nodeRegistry) {
     const plugin = window.NodePlugins[info.pluginId];
     if (!plugin || !plugin.getMetrics) continue;
@@ -901,6 +1075,8 @@ setInterval(() => {
     const dot = document.getElementById(`ndot-${nid}`);
     if (dot) dot.className = m.dotCls;
   }
+
+  if (_rightActiveTab !== 'nodes') return;
 
   if (!selectedNodeId) {
     // Refresh node list in right panel
@@ -981,7 +1157,7 @@ window.NodePlugins['recording'] = {
   pins: {
     in:  [
       { label: 'トリガー入力', accepts: window.PIN_TYPES.TRIGGER },
-      { label: '収録', accepts: [window.PIN_TYPES.VIDEO, window.PIN_TYPES.WASM_FRAME] },
+      { label: '収録', accepts: [window.PIN_TYPES.VIDEO, window.PIN_TYPES.WASM_FRAME, window.PIN_TYPES.LIVELINK_FACE] },
     ],
     out: [
       { type: window.PIN_TYPES.TRIGGER, label: '録画' },
@@ -1002,9 +1178,17 @@ window.NodePlugins['recording'] = {
       active: false, takeId: null,
       timerInterval: null, startTime: 0,
       takeName: 'take',
+      prefixMode:    localStorage.getItem(`rec-prefixMode-${nodeId}`)    || 'free',
+      prefixProject: localStorage.getItem(`rec-prefixProject-${nodeId}`) || '',
+      prefixEpisode: localStorage.getItem(`rec-prefixEpisode-${nodeId}`) || '',
+      prefixCut:     localStorage.getItem(`rec-prefixCut-${nodeId}`)     || '',
+      prefixFree:    localStorage.getItem(`rec-prefixFree-${nodeId}`)    || 'take',
+      suffixMode:    localStorage.getItem(`rec-suffixMode-${nodeId}`)    || 'datetime',
+      seqNum:        parseInt(localStorage.getItem(`rec-seqNum-${nodeId}`) || '1', 10),
       recordDir: localStorage.getItem('rec-recordDir') || '',
       connectedVideoIds: new Set(),
       connectedFrameIds: new Set(), // WASM_FRAME sources
+      connectedMocapIds: new Set(), // LIVELINK_FACE sources
       syncInterval: null,
       // WebCodecs state
       _encoder: null, _mux: null, _frameCanvas: null, _frameCtx: null,
@@ -1024,7 +1208,7 @@ window.NodePlugins['recording'] = {
               <span class="pin-dot"></span>
               <span class="pin-label" style="margin-left:6px;">トリガー</span>
             </div>
-            <div class="pin-row pin-in pin-type-multi" data-accepts="video,wasm-frame" style="margin:0;">
+            <div class="pin-row pin-in pin-type-multi" data-accepts="video,wasm-frame,livelink-face" style="margin:0;">
               <span class="pin-dot"></span>
               <span class="pin-label" style="margin-left:6px;">収録</span>
             </div>
@@ -1053,9 +1237,12 @@ window.NodePlugins['recording'] = {
         if (toNodeId !== nodeId) return;
         const conn = [...window.connections.values()]
           .find(c => c.toNodeId === nodeId && c.fromNodeId === fromNodeId);
-        if (conn && conn.toPinIdx === 1) {
+        if (!conn) return;
+        if (conn.toPinIdx === 1) {
           if (conn.type === window.PIN_TYPES.WASM_FRAME) {
             state.connectedFrameIds.add(fromNodeId);
+          } else if (conn.type === window.PIN_TYPES.LIVELINK_FACE) {
+            state.connectedMocapIds.add(fromNodeId);
           } else {
             state.connectedVideoIds.add(fromNodeId);
           }
@@ -1065,16 +1252,28 @@ window.NodePlugins['recording'] = {
         if (toNodeId !== nodeId) return;
         state.connectedVideoIds.delete(fromNodeId);
         state.connectedFrameIds.delete(fromNodeId);
+        state.connectedMocapIds.delete(fromNodeId);
         if (state.active && state.connectedVideoIds.size === 0 && state.connectedFrameIds.size === 0)
           window._recStop(nodeId);
       },
-      onTrigger(_from, to) {
+      onTrigger(_from, to, payload = {}) {
         if (to !== nodeId) return;
-        window._recToggle(nodeId);
+        if (payload.bool === true)       window._recStart(nodeId, payload.st);
+        else if (payload.bool === false) window._recStop(nodeId);
+        else                             window._recToggle(nodeId);
       },
       onFrame(token, fromNodeId) {
         if (!state.active || !state.connectedFrameIds.has(fromNodeId)) return;
         window._recEncodeFrame(nodeId, token);
+      },
+      onMocap(data, fromNodeId) {
+        if (!state.active || !state.connectedMocapIds.has(fromNodeId)) return;
+        if (!state.takeId) return;
+        const el = document.getElementById(fromNodeId);
+        const nameEl = el && el.querySelector('.node-name');
+        const sourceNode = (nameEl && nameEl.value.trim()) || fromNodeId;
+        const { _raw, ...cleanData } = data.data || {};
+        window.socket.emit(EVENTS.TAKE_MOCAP_FRAME, { takeId: state.takeId, payload: { format: data.format, data: cleanData, port: data.port, sourceNode } });
       },
     });
 
@@ -1082,14 +1281,21 @@ window.NodePlugins['recording'] = {
     state.syncInterval = setInterval(() => {
       const hasStream = [...state.connectedVideoIds].some(id => window.nodeStreams.has(id));
       const hasFrame  = state.connectedFrameIds.size > 0;
+      const hasMocap  = state.connectedMocapIds.size > 0;
       const btn = document.getElementById(`rec-btn-${nodeId}`);
-      if (btn) btn.disabled = !(hasStream || hasFrame);
+      if (btn) btn.disabled = !(hasStream || hasFrame || hasMocap);
     }, 500);
   },
 
   createPanel(nodeId, cont) {
     const state = window._recState[nodeId];
+    const pm  = state?.prefixMode  ?? 'free';
+    const sm  = state?.suffixMode  ?? 'datetime';
+    const seq = String(state?.seqNum ?? 1).padStart(3, '0');
+    const previewName = state ? window._recPreviewName(state) : 'take_…';
+
     cont.innerHTML = `
+      <div style="display:flex;flex-direction:column;height:100%;">
       <div class="perf-section">
         <div class="perf-section-title">ステータス</div>
         <div class="stats-row">
@@ -1098,29 +1304,124 @@ window.NodePlugins['recording'] = {
         </div>
       </div>
       <div class="perf-section">
-        <div class="perf-section-title">設定</div>
+        <div class="perf-section-title">テイク名プリセット</div>
+
         <div class="form-row">
-          <label>テイク名プリセット</label>
-          <input type="text" id="prec-name-${nodeId}" value="${window.escHtml(state ? state.takeName : 'take')}" />
+          <label style="margin-bottom:6px;">プリフィックス</label>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);">
+              <input type="radio" name="prec-pm-${nodeId}" value="structured" ${pm === 'structured' ? 'checked' : ''}>
+              プロジェクト構成
+            </label>
+            <div id="prec-struct-${nodeId}" style="padding-left:16px;display:${pm === 'structured' ? 'flex' : 'none'};flex-direction:column;gap:4px;">
+              <input type="text" id="prec-proj-${nodeId}" placeholder="Project" value="${window.escHtml(state?.prefixProject ?? '')}" />
+              <input type="text" id="prec-ep-${nodeId}"   placeholder="Episode (EP01)" value="${window.escHtml(state?.prefixEpisode ?? '')}" />
+              <input type="text" id="prec-cut-${nodeId}"  placeholder="Cut (CUT001)"   value="${window.escHtml(state?.prefixCut ?? '')}" />
+            </div>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);">
+              <input type="radio" name="prec-pm-${nodeId}" value="free" ${pm === 'free' ? 'checked' : ''}>
+              フリー入力
+            </label>
+            <div id="prec-free-${nodeId}" style="padding-left:16px;display:${pm === 'free' ? 'flex' : 'none'};flex-direction:column;gap:4px;">
+              <input type="text" id="prec-name-${nodeId}" value="${window.escHtml(state?.prefixFree ?? 'take')}" />
+            </div>
+          </div>
         </div>
+
         <div class="form-row">
-          <label>保存先フォルダ</label>
+          <label style="margin-bottom:6px;">サフィックス</label>
+          <div style="display:flex;flex-direction:column;gap:6px;">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);">
+              <input type="radio" name="prec-sm-${nodeId}" value="datetime" ${sm === 'datetime' ? 'checked' : ''}>
+              日時自動入力
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);">
+              <input type="radio" name="prec-sm-${nodeId}" value="seq" ${sm === 'seq' ? 'checked' : ''}>
+              3桁連番
+            </label>
+            <div id="prec-seq-ctrl-${nodeId}" style="padding-left:16px;display:${sm === 'seq' ? 'flex' : 'none'};align-items:center;gap:8px;">
+              <span style="color:var(--text2);font-size:12px;">次: <span id="prec-seq-num-${nodeId}" style="color:var(--text);font-family:monospace;">${seq}</span></span>
+              <button class="btn-secondary" id="prec-seq-reset-btn-${nodeId}" style="width:auto;padding:2px 8px;font-size:11px;">リセット</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <label>テイク名プレビュー</label>
+          <div id="prec-preview-${nodeId}" style="font-family:monospace;font-size:11px;color:var(--text2);word-break:break-all;padding:4px 6px;background:rgba(0,0,0,.25);border-radius:4px;">${previewName}</div>
+        </div>
+
+      </div>
+      <div class="perf-section" style="margin-top:auto;">
+        <div class="perf-section-title">保存先フォルダ</div>
+        <div class="form-row">
           <div style="display:flex;gap:4px;">
-            <input type="text" id="prec-dir-${nodeId}" value="${window.escHtml(state ? state.recordDir : '')}" style="flex:1" />
+            <input type="text" id="prec-dir-${nodeId}" value="${window.escHtml(state?.recordDir ?? '')}" style="flex:1" />
             <button class="btn-secondary" id="prec-browse-${nodeId}" style="flex-shrink:0;width:auto;padding:4px 8px;">参照</button>
           </div>
         </div>
       </div>
+      </div>
     `;
 
+    // ── Preview helper ────────────────────────────────────────────────────
+    const updatePreview = () => {
+      if (!state) return;
+      const el = document.getElementById(`prec-preview-${nodeId}`);
+      if (el) el.textContent = window._recPreviewName(state);
+    };
+
+    // ── Prefix radios ─────────────────────────────────────────────────────
+    const structDiv = document.getElementById(`prec-struct-${nodeId}`);
+    const freeDiv   = document.getElementById(`prec-free-${nodeId}`);
+    cont.querySelectorAll(`input[name="prec-pm-${nodeId}"]`).forEach(r => {
+      r.addEventListener('change', () => {
+        if (!state) return;
+        state.prefixMode = r.value;
+        localStorage.setItem(`rec-prefixMode-${nodeId}`, r.value);
+        structDiv.style.display = r.value === 'structured' ? 'flex' : 'none';
+        freeDiv.style.display   = r.value === 'free'       ? 'flex' : 'none';
+        updatePreview();
+      });
+    });
+
+    const projInput = document.getElementById(`prec-proj-${nodeId}`);
+    const epInput   = document.getElementById(`prec-ep-${nodeId}`);
+    const cutInput  = document.getElementById(`prec-cut-${nodeId}`);
+    if (projInput) projInput.addEventListener('input', () => { if (state) { state.prefixProject = projInput.value; localStorage.setItem(`rec-prefixProject-${nodeId}`, projInput.value); updatePreview(); } });
+    if (epInput)   epInput  .addEventListener('input', () => { if (state) { state.prefixEpisode = epInput.value;   localStorage.setItem(`rec-prefixEpisode-${nodeId}`, epInput.value);   updatePreview(); } });
+    if (cutInput)  cutInput .addEventListener('input', () => { if (state) { state.prefixCut     = cutInput.value;  localStorage.setItem(`rec-prefixCut-${nodeId}`,     cutInput.value);  updatePreview(); } });
+
     const nameInput = document.getElementById(`prec-name-${nodeId}`);
-    if (nameInput) nameInput.addEventListener('input', () => { if (state) state.takeName = nameInput.value; });
+    if (nameInput) nameInput.addEventListener('input', () => {
+      if (state) { state.prefixFree = nameInput.value; state.takeName = nameInput.value; localStorage.setItem(`rec-prefixFree-${nodeId}`, nameInput.value); updatePreview(); }
+    });
+
+    // ── Suffix radios ─────────────────────────────────────────────────────
+    const seqCtrl = document.getElementById(`prec-seq-ctrl-${nodeId}`);
+    cont.querySelectorAll(`input[name="prec-sm-${nodeId}"]`).forEach(r => {
+      r.addEventListener('change', () => {
+        if (!state) return;
+        state.suffixMode = r.value;
+        localStorage.setItem(`rec-suffixMode-${nodeId}`, r.value);
+        seqCtrl.style.display = r.value === 'seq' ? 'flex' : 'none';
+        updatePreview();
+      });
+    });
+
+    const seqResetBtn = document.getElementById(`prec-seq-reset-btn-${nodeId}`);
+    if (seqResetBtn) seqResetBtn.addEventListener('click', () => {
+      if (!state) return;
+      state.seqNum = 1;
+      localStorage.setItem(`rec-seqNum-${nodeId}`, '1');
+      const numSpan = document.getElementById(`prec-seq-num-${nodeId}`);
+      if (numSpan) numSpan.textContent = '001';
+    });
+
+    // ── Directory ─────────────────────────────────────────────────────────
     const dirInput = document.getElementById(`prec-dir-${nodeId}`);
     if (dirInput) dirInput.addEventListener('input', () => {
-      if (state) {
-        state.recordDir = dirInput.value;
-        localStorage.setItem('rec-recordDir', dirInput.value);
-      }
+      if (state) { state.recordDir = dirInput.value; localStorage.setItem('rec-recordDir', dirInput.value); }
     });
     const browseBtn = document.getElementById(`prec-browse-${nodeId}`);
     if (browseBtn) browseBtn.addEventListener('click', async () => {
@@ -1138,8 +1439,8 @@ window.NodePlugins['recording'] = {
       if (!state) return;
       const b = document.getElementById(`prec-badge-${nodeId}`);
       if (b) {
-        b.textContent  = state.active ? '録画中' : '停止';
-        b.className    = 'badge ' + (state.active ? 'badge-danger' : 'badge-inactive');
+        b.textContent = state.active ? '録画中' : '停止';
+        b.className   = 'badge ' + (state.active ? 'badge-danger' : 'badge-inactive');
       }
     }, 500);
     cont._cleanupTimer = timer;
@@ -1171,20 +1472,73 @@ window.NodePlugins['recording'] = {
   },
 };
 
+window._recPreviewName = (state) => {
+  let prefix;
+  if (state.prefixMode === 'structured') {
+    const parts = [state.prefixProject, state.prefixEpisode, state.prefixCut]
+      .map(s => (s || '').trim()).filter(Boolean);
+    prefix = parts.join('_') || 'take';
+  } else {
+    prefix = (state.prefixFree || state.takeName || 'take').trim() || 'take';
+  }
+  let suffix;
+  if (state.suffixMode === 'seq') {
+    suffix = String(state.seqNum).padStart(3, '0');
+  } else {
+    suffix = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  }
+  return `${prefix}_${suffix}`;
+};
+
+window._recBuildTakeId = (state, nodeId) => {
+  let prefix;
+  if (state.prefixMode === 'structured') {
+    const parts = [state.prefixProject, state.prefixEpisode, state.prefixCut]
+      .map(s => (s || '').trim()).filter(Boolean);
+    prefix = parts.join('_') || 'take';
+  } else {
+    prefix = (state.prefixFree || state.takeName || 'take').trim() || 'take';
+  }
+
+  let suffix;
+  if (state.suffixMode === 'seq') {
+    suffix = String(state.seqNum).padStart(3, '0');
+    state.seqNum++;
+    localStorage.setItem(`rec-seqNum-${nodeId}`, String(state.seqNum));
+    const numSpan = document.getElementById(`prec-seq-num-${nodeId}`);
+    if (numSpan) numSpan.textContent = String(state.seqNum).padStart(3, '0');
+  } else {
+    suffix = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  }
+
+  return `${prefix}_${suffix}`;
+};
+
 window._recToggle = (nodeId) => {
   const state = window._recState[nodeId];
   if (!state) return;
   if (state.active) window._recStop(nodeId); else window._recStart(nodeId);
 };
 
-window._recStart = (nodeId) => {
+window._recStart = (nodeId, overrideName) => {
   const state = window._recState[nodeId];
   if (!state || state.active) return;
   const hasVideo = [...state.connectedVideoIds].some(id => window.nodeStreams.has(id));
   const hasFrame = state.connectedFrameIds.size > 0;
   if (!hasVideo && !hasFrame) return;
   state.active    = true;
-  state.takeId    = (state.takeName || 'take') + '_' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  if (overrideName) {
+    // Temporarily override free prefix for this take only
+    const savedMode   = state.prefixMode;
+    const savedFree   = state.prefixFree;
+    state.prefixMode  = 'free';
+    state.prefixFree  = overrideName;
+    state.takeId      = window._recBuildTakeId(state, nodeId);
+    state.prefixMode  = savedMode;
+    state.prefixFree  = savedFree;
+  } else {
+    state.takeId = window._recBuildTakeId(state, nodeId);
+  }
   state.startTime = Date.now();
   localStorage.setItem('rec-recordDir', state.recordDir || '');
   const btn = document.getElementById(`rec-btn-${nodeId}`);
@@ -1197,7 +1551,16 @@ window._recStart = (nodeId) => {
     const el  = document.getElementById(`rec-timer-${nodeId}`);
     if (el) el.textContent = `${h}:${m}:${sec}`;
   }, 1000);
-  window.socket.emit(EVENTS.TAKE_START, { takeId: state.takeId, recordDir: state.recordDir || undefined });
+  const rawSources = [];
+  for (const nid of state.connectedMocapIds) {
+    const s = window._llFaceState && window._llFaceState[nid];
+    if (!s) continue;
+    const el = document.getElementById(nid);
+    const nameEl = el && el.querySelector('.node-name');
+    const nodeName = (nameEl && nameEl.value.trim()) || nid;
+    rawSources.push({ nodeName, port: s.port, protocol: 'livelink-face' });
+  }
+  window.socket.emit(EVENTS.TAKE_START, { takeId: state.takeId, recordDir: state.recordDir || undefined, rawSources });
   // Start MediaRecorder for VIDEO streams (VIDEO pin or WASM_FRAME pin with a backing stream)
   const streamId = [...state.connectedVideoIds].find(id => window.nodeStreams.has(id))
                 ?? [...state.connectedFrameIds].find(id => window.nodeStreams.has(id));
@@ -1318,23 +1681,71 @@ window.NodePlugins['recording'].create({ x: 50, y: 50 });
   const mf = { label: 'Motion Data', accepts: window.PIN_TYPES.LIVELINK_FACE };
   const tr = { out: [{ type: window.PIN_TYPES.TRIGGER, label: 'ステータス' }], in: [{ label: 'トリガー', accepts: window.PIN_TYPES.TRIGGER }] };
 
-  mk('cast-livelink', 'LiveLink Face out', '📤', fc, 'LiveLink', ll, { out: [], in: [mf] });
   mk('cast-vmc',      'VMC out',           '📤', mc, 'VMC',     ll, { out: [], in: [mf] });
   mk('cast-mocopi',   'mocopi out',        '📤', mc, 'mocopi',  ll, { out: [], in: [mf] });
-
-  mk('virtual-camera', '仮想カメラ',          '📸', ei, '出力', vi, { out: [], in: [{ label: '映像入力', accepts: window.PIN_TYPES.VIDEO }] });
-  mk('preview-window', 'プレビューウィンドウ', '🖼️', ei, '出力', vi, { out: [], in: [{ label: '映像入力', accepts: window.PIN_TYPES.VIDEO }] });
 
   mk('remote-obs',           'OBS',          '🔴', rm, null, ll, tr);
   mk('remote-motionbuilder', 'MotionBuilder', '🎞️', rm, null, ll, tr);
   mk('remote-vicon-shogun',  'ViconShogun',  '🎯', rm, null, ll, tr);
   mk('remote-aja-kipro',     'Aja Kipro',    '📼', rm, null, ll, tr);
   mk('remote-blackmagic',    'Blackmagic',   '🎥', rm, null, ll, tr);
-  mk('remote-visca',         'VISCAoverIP',  '🕹️', rm, null, ll, tr);
   mk('remote-dmx',           'DMX',          '💡', rm, null, ll, tr);
 
-  mk('util-trigger',  'トリガー',   '⚡', ut, null, 'node-card',
-     { out: [{ type: window.PIN_TYPES.TRIGGER, label: 'Out' }], in: [] });
+  // util-trigger: manual Start/Stop trigger node (full implementation)
+  window._triggerState = window._triggerState || {};
+  window.NodePlugins['util-trigger'] = {
+    label: 'トリガー', icon: '⚡', menuGroup: ut, menuSection: null,
+    nodeClass: 'node-card',
+    pins: {
+      out: [{ type: window.PIN_TYPES.TRIGGER, label: 'Out' }],
+      in:  [],
+    },
+    create(pos) {
+      const nid  = window.generateNodeId();
+      const name = window.nextUniqueName('util-trigger', 'トリガー');
+      window.createPluginNode('util-trigger', nid, pos);
+      const e = document.getElementById(`ename-${nid}`);
+      if (e) e.value = name;
+      return nid;
+    },
+    mount(nid, el) {
+      window._triggerState[nid] = { started: false };
+      el.innerHTML =
+        `<div class="node-header" id="nheader-${nid}">` +
+        `<span class="node-state-dot" id="ndot-${nid}"></span>` +
+        `<input class="node-name" id="ename-${nid}" value="${window.escHtml('トリガー')}"/>` +
+        `<button class="node-delete-btn" onclick="window.removePluginNode('${nid}')">✕</button>` +
+        `</div>` +
+        `<div class="node-body" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px;">` +
+        `<button id="trig-btn-${nid}" class="btn-primary"` +
+        ` onmousedown="event.stopPropagation()"` +
+        ` onclick="window._triggerFire('${nid}')"` +
+        ` style="flex:1;">▶ Start</button>` +
+        `<div class="pin-row pin-out pin-type-trigger" data-type="trigger" style="margin:0;flex-shrink:0;">` +
+        `<span class="pin-label">Out</span><span class="pin-dot"></span>` +
+        `</div>` +
+        `</div>`;
+    },
+    createPanel: null,
+    getMetrics(nid) {
+      const st = window._triggerState[nid];
+      return st && st.started
+        ? { dotCls: 'node-state-dot state-active', statusCls: 'badge-active',   statusLabel: '送出中', stats: [] }
+        : { dotCls: 'node-state-dot',              statusCls: 'badge-inactive', statusLabel: '待機中', stats: [] };
+    },
+    unmount(nid) { delete window._triggerState[nid]; },
+  };
+  window._triggerFire = function(nid) {
+    const st = window._triggerState[nid];
+    if (!st) return;
+    st.started = !st.started;
+    const btn = document.getElementById(`trig-btn-${nid}`);
+    if (btn) {
+      if (st.started) { btn.textContent = '■ Stop'; btn.className = 'btn-secondary'; }
+      else            { btn.textContent = '▶ Start'; btn.className = 'btn-primary'; }
+    }
+    window.fireTrigger(nid, 0, { bool: st.started });
+  };
   mk('util-embed',    'エンベッド', '🔗', ut, null, vi,
      { out: [{ type: window.PIN_TYPES.VIDEO, label: '映像出力' }], in: [{ label: '映像入力', accepts: window.PIN_TYPES.VIDEO }] });
   mk('util-override', 'Override',   '✏️', ut, null, ll,
@@ -1346,12 +1757,16 @@ window.NodePlugins['recording'].create({ x: 50, y: 50 });
 })();
 
 // ── WebRTC broadcaster (ライブ視聴ページ向け) ─────────────────────────────────
+// VideoShare ノードが window.broadcastStreams を管理する。
+// ブロードキャスターはそこだけを見ることで VideoShare の接続状態を正確に反映する。
+window.broadcastStreams = new Map(); // videoShareNodeId → cloned MediaStream
+
 (function () {
   const _rtcPeers = new Map(); // viewerId → RTCPeerConnection
 
   function getActiveStreams() {
     const streams = [];
-    for (const stream of window.nodeStreams.values()) {
+    for (const stream of window.broadcastStreams.values()) {
       if (stream instanceof MediaStream && stream.getTracks().some(t => t.readyState === 'live')) {
         streams.push(stream);
       }
@@ -1359,25 +1774,66 @@ window.NodePlugins['recording'].create({ x: 50, y: 50 });
     return streams;
   }
 
+  async function offerToPeer(viewerId, pc) {
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit(EVENTS.RTC_OFFER, { viewerId, sdp: offer });
+    } catch (e) { console.warn('[RTC] renegotiate error', e); }
+  }
+
+  // VideoShare が呼ぶ: broadcastStreams が変化したとき既存 PC に差分を反映して再ネゴ
+  window._rtcSyncPeers = async function () {
+    const streams = getActiveStreams();
+    for (const [viewerId, pc] of _rtcPeers) {
+      // 終了済みまたは broadcastStreams から消えたトラックの sender を削除
+      for (const sender of pc.getSenders()) {
+        if (!sender.track) continue;
+        const stillActive = sender.track.readyState === 'live' &&
+          streams.some(s => s.getTracks().includes(sender.track));
+        if (!stillActive) {
+          try { pc.removeTrack(sender); } catch (_) {}
+        }
+      }
+      // 新規トラックを追加
+      for (const stream of streams) {
+        for (const track of stream.getTracks()) {
+          const already = pc.getSenders().some(s => s.track === track);
+          if (!already) pc.addTrack(track, stream);
+        }
+      }
+      await offerToPeer(viewerId, pc);
+    }
+  };
+
   socket.on(EVENTS.RTC_VIEWER_JOINED, async ({ viewerId }) => {
     const streams = getActiveStreams();
     if (streams.length === 0) return; // 配信中ストリームなし
     const pc = new RTCPeerConnection({ iceServers: [] });
     _rtcPeers.set(viewerId, pc);
     for (const stream of streams) {
-      for (const track of stream.getTracks()) pc.addTrack(track, stream);
+      for (const track of stream.getTracks()) {
+        pc.addTrack(track, stream);
+      }
     }
     pc.onicecandidate = ({ candidate }) => {
       if (candidate) socket.emit(EVENTS.RTC_ICE, { targetId: viewerId, candidate });
     };
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    socket.emit(EVENTS.RTC_OFFER, { viewerId, sdp: offer });
+    await offerToPeer(viewerId, pc);
   });
 
   socket.on(EVENTS.RTC_ANSWER, async ({ viewerId, sdp }) => {
     const pc = _rtcPeers.get(viewerId);
-    if (pc) await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    if (!pc) return;
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    // ネゴシエーション完了後に maxBitrate を適用（addTrack 直後は encodings が空のため無効）
+    for (const sender of pc.getSenders()) {
+      if (!sender.track || sender.track.kind !== 'video') continue;
+      const params = sender.getParameters();
+      if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+      params.encodings.forEach(enc => { enc.maxBitrate = 8_000_000; });
+      sender.setParameters(params).catch(e => console.warn('[RTC] setParameters:', e));
+    }
   });
 
   socket.on(EVENTS.RTC_ICE, async ({ fromId, candidate }) => {
@@ -1391,5 +1847,23 @@ window.NodePlugins['recording'].create({ x: 50, y: 50 });
   });
 })();
 
-// Show node list on initial load
-showNodeList();
+// Auto-save scene on page unload
+window.addEventListener('beforeunload', () => {
+  try { localStorage.setItem('vlnk_autosave', JSON.stringify(captureScene('__autosave__'))); } catch {}
+});
+
+// Auto-load last scene on startup
+(function() {
+  try {
+    // 保存済みシーンが選択されていた場合はそちらを優先して復元
+    if (_currentSceneIdx >= 0) {
+      const arr = _getSavedScenes();
+      if (arr[_currentSceneIdx]) { applyScene(arr[_currentSceneIdx]); showNodeList(); return; }
+      // 保存リストから消えていた場合はデフォルトにリセット
+      _setCurrentSceneIdx(-1);
+    }
+    const raw = localStorage.getItem('vlnk_autosave');
+    if (raw) { applyScene(JSON.parse(raw)); showNodeList(); return; }
+  } catch (e) { console.warn('Scene auto-load failed:', e); }
+  showNodeList();
+})();
