@@ -327,6 +327,19 @@
       cont._cleanupTimer = timer;
     },
 
+    getSettings(nodeId) {
+      const state = window._cdState[nodeId];
+      return { seconds: state ? state.seconds : 5 };
+    },
+
+    applySettings(nodeId, s) {
+      const state = window._cdState[nodeId];
+      if (!state || s.seconds == null) return;
+      state.seconds = s.seconds;
+      const inp = document.getElementById(`pcd-sec-${nodeId}`);
+      if (inp) inp.value = s.seconds;
+    },
+
     getMetrics(nodeId) {
       const state   = window._cdState[nodeId];
       const running = !!(state && state.running && state.remaining > 0);

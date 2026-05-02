@@ -61,6 +61,10 @@ window.NodePlugins['webcam'] = {
         opt.textContent = d.label || `Camera ${d.deviceId.slice(0, 8)}`;
         sel.appendChild(opt);
       });
+      if (state && state._pendingDeviceId) {
+        sel.value = state._pendingDeviceId;
+        state._pendingDeviceId = null;
+      }
     });
   },
 
@@ -103,7 +107,7 @@ window.NodePlugins['webcam'] = {
           <select id="pwc-outres-${nodeId}"
             onchange="window._webcamSetRes('${nodeId}', this.value)"
             onmousedown="event.stopPropagation()">
-            <option value="source" ${!state || state.outRes === 'source' ? 'selected' : ''}>ソースのまま</option>
+            <option value="source" ${!state || state.outRes === 'source' ? 'selected' : ''}>Auto</option>
             <option value="1920x1080" ${state && state.outRes === '1920x1080' ? 'selected' : ''}>1920×1080</option>
             <option value="1280x720" ${state && state.outRes === '1280x720' ? 'selected' : ''}>1280×720</option>
           </select>
@@ -135,6 +139,20 @@ window.NodePlugins['webcam'] = {
       if (wasmEl) wasmEl.textContent = window.VLinkWasm ? '有効' : '無効';
     }, 500);
     cont._cleanupTimer = timer;
+  },
+
+  getSettings(nodeId) {
+    const state = window._webcamState && window._webcamState[nodeId];
+    const sel   = document.getElementById(`wc-device-${nodeId}`);
+    return { fitMode: state ? state.fitMode : 'letterbox', outRes: state ? state.outRes : 'source', deviceId: sel ? sel.value : '' };
+  },
+
+  applySettings(nodeId, s) {
+    const state = window._webcamState && window._webcamState[nodeId];
+    if (!state) return;
+    if (s.fitMode) state.fitMode = s.fitMode;
+    if (s.outRes)  state.outRes  = s.outRes;
+    if (s.deviceId) state._pendingDeviceId = s.deviceId;
   },
 
   getMetrics(nodeId) {
@@ -227,9 +245,12 @@ window._webcamToggle = async (nodeId) => {
         const s    = track.getSettings();
         const srcW = s.width  || 1280;
         const srcH = s.height || 720;
+        const PRESETS_16_9 = [[1280,720],[1920,1080],[2560,1440],[3840,2160]];
+        const autoPreset = PRESETS_16_9.find(([pw, ph]) => pw >= srcW && ph >= srcH)
+                        ?? PRESETS_16_9[PRESETS_16_9.length - 1];
         const [outW, outH] = state.outRes === '1920x1080' ? [1920, 1080]
                            : state.outRes === '1280x720'  ? [1280, 720]
-                           : [srcW, Math.round(srcW * 9 / 16)];
+                           : autoPreset;
         if (oc.width !== outW || oc.height !== outH) { oc.width = outW; oc.height = outH; }
         octx.fillStyle = '#000';
         octx.fillRect(0, 0, outW, outH);

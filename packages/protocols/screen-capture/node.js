@@ -131,6 +131,18 @@ window.NodePlugins['screen-capture'] = {
     cont._cleanupTimer = timer;
   },
 
+  getSettings(nodeId) {
+    const state = window._screenState && window._screenState[nodeId];
+    return { fitMode: state ? state.fitMode : 'letterbox', outRes: state ? state.outRes : 'source' };
+  },
+
+  applySettings(nodeId, s) {
+    const state = window._screenState && window._screenState[nodeId];
+    if (!state) return;
+    if (s.fitMode) state.fitMode = s.fitMode;
+    if (s.outRes)  state.outRes  = s.outRes;
+  },
+
   getMetrics(nodeId) {
     const state = window._screenState && window._screenState[nodeId];
     const active = !!(state && state.stream);

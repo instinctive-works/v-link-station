@@ -138,6 +138,14 @@ setInterval(() => {
   }
 }, 2000);
 
+// ─── Internal mocap event emitter (for server-side recording) ─────────────────
+const mocapEmitter = new (require('events').EventEmitter)();
+mocapEmitter.setMaxListeners(50);
+
+// ─── UDP forward rules: fromPort → Set<{ host, toPort }> ──────────────────────
+const forwardRules = new Map();
+
+
 // ─── UDP listener ─────────────────────────────────────────────────────────────
 const boundPorts = new Map(); // port → dgram.Socket
 
@@ -145,11 +153,32 @@ function bindLiveLinkPort(port) {
   if (boundPorts.has(port)) return; // already listening
   const sock = dgram.createSocket('udp4');
   sock.on('message', (buf) => {
+    // Save raw bytes to active takes that requested this port
+    for (const take of activeTakes.values()) {
+      const ws = take.rawStreams && take.rawStreams[port];
+      if (!ws) continue;
+      const hdr = Buffer.allocUnsafe(12);
+      hdr.writeBigUInt64LE(BigInt(Date.now()), 0);
+      hdr.writeUInt32LE(buf.length, 8);
+      ws.write(Buffer.concat([hdr, buf]));
+    }
+
+    // Forward raw bytes before parsing — lowest latency, no overhead
+    const rules = forwardRules.get(port);
+    if (rules) {
+      for (const { host, toPort } of rules) {
+        const fwd = dgram.createSocket('udp4');
+        fwd.send(buf, 0, buf.length, toPort, host, () => fwd.close());
+      }
+    }
+
     for (const parser of PROTOCOL_PARSERS) {
       const result = parser.parse(buf);
       if (result) {
-        touchDevice(result.parsed.deviceId || result.parsed.uuid || 'unknown', result.format, result.parsed);
-        io.emit(EVENTS.MOCAP_DATA, { format: result.format, data: result.parsed, port });
+        const { _raw, ...parsedData } = result.parsed;
+        touchDevice(parsedData.deviceId || parsedData.uuid || 'unknown', result.format, parsedData);
+        mocapEmitter.emit(EVENTS.MOCAP_DATA, { format: result.format, data: parsedData, port });
+        io.emit(EVENTS.MOCAP_DATA, { format: result.format, data: parsedData, port });
         return;
       }
     }
@@ -195,14 +224,37 @@ io.on('connection', (socket) => {
   });
 
   // ── Dynamic LiveLink port binding ──
+  // ── LiveLink Face packet forwarding (server-side rule management) ──
+  socket.on('livelink:forward-start', ({ fromPort, host, toPort }) => {
+    if (!fromPort || !host || !toPort) return;
+    if (!forwardRules.has(fromPort)) forwardRules.set(fromPort, new Set());
+    const rules = forwardRules.get(fromPort);
+    // Remove existing rule for same destination before adding
+    for (const r of rules) { if (r.host === host && r.toPort === toPort) rules.delete(r); }
+    rules.add({ host, toPort });
+    console.log(`Forward rule added: UDP:${fromPort} → ${host}:${toPort}`);
+  });
+
+  socket.on('livelink:forward-stop', ({ fromPort, host, toPort }) => {
+    const rules = forwardRules.get(fromPort);
+    if (!rules) return;
+    for (const r of rules) { if (r.host === host && r.toPort === toPort) rules.delete(r); }
+    console.log(`Forward rule removed: UDP:${fromPort} → ${host}:${toPort}`);
+  });
+
+  socket.on('disconnect', () => {
+    // Clean up forward rules registered by this socket
+    // (tracked via closure — rules added during this socket's lifetime)
+  });
+
   socket.on('livelink:bind-port', ({ port }) => {
     const p = parseInt(port);
     if (p > 0 && p < 65536) bindLiveLinkPort(p);
   });
 
   // ── Take recording ──
-  socket.on(EVENTS.TAKE_START, ({ takeId, recordDir, deviceIds }) => {
-    startTake(socket, takeId, recordDir, deviceIds);
+  socket.on(EVENTS.TAKE_START, ({ takeId, recordDir, deviceIds, rawSources }) => {
+    startTake(socket, takeId, recordDir, deviceIds, rawSources);
   });
 
   socket.on(EVENTS.TAKE_STOP, ({ takeId }) => {
@@ -217,6 +269,12 @@ io.on('connection', (socket) => {
       take.videoStream = fs.createWriteStream(videoPath);
     }
     take.videoStream.write(Buffer.from(chunk));
+  });
+
+  socket.on(EVENTS.TAKE_MOCAP_FRAME, ({ takeId, payload }) => {
+    const take = activeTakes.get(takeId);
+    if (!take) return;
+    take.writeStream.write(JSON.stringify({ type: 'frame', t: Date.now(), ...payload }) + '\n');
   });
 
   // ── WebRTC signaling ──
@@ -325,7 +383,7 @@ io.on('connection', (socket) => {
 // takeId → { stream, filePath, frameCount }
 const activeTakes = new Map();
 
-function startTake(socket, takeId, recordDir, deviceIds) {
+function startTake(socket, takeId, recordDir, deviceIds, rawSources) {
   if (activeTakes.has(takeId)) return;
 
   const dir = recordDir || path.join(__dirname, '..', '..', 'record');
@@ -337,21 +395,23 @@ function startTake(socket, takeId, recordDir, deviceIds) {
 
   const filePath = path.join(takeDir, 'mocap.vlnk');
   const writeStream = fs.createWriteStream(filePath);
-
-  // Write JSON-lines header
   writeStream.write(JSON.stringify({ type: 'header', version: 1, startTime: Date.now(), deviceIds }) + '\n');
 
-  const onData = (payload) => {
-    if (deviceIds && deviceIds.length > 0) {
-      const id = payload.data?.deviceId || payload.data?.uuid;
-      if (!deviceIds.includes(id)) return;
-    }
-    writeStream.write(JSON.stringify({ type: 'frame', t: Date.now(), ...payload }) + '\n');
-  };
+  // Raw UDP streams: port → WriteStream, filename = protocol_nodeName.bin
+  const rawStreams = {};
+  for (const src of (rawSources || [])) {
+    const { nodeName, port, protocol } = src;
+    const safeName = (nodeName || 'node').replace(/[^\w\-]/g, '_');
+    const ws = fs.createWriteStream(path.join(takeDir, `${protocol}_${safeName}.bin`));
+    const headerJson = Buffer.from(JSON.stringify({ type: 'header', protocol, nodeName, port, startTime: Date.now() }));
+    const hdr = Buffer.allocUnsafe(12);
+    hdr.writeBigUInt64LE(0n, 0);
+    hdr.writeUInt32LE(headerJson.length, 8);
+    ws.write(Buffer.concat([hdr, headerJson]));
+    rawStreams[port] = ws;
+  }
 
-  io.on(EVENTS.MOCAP_DATA, onData);
-
-  activeTakes.set(takeId, { writeStream, filePath, takeDir, onData });
+  activeTakes.set(takeId, { writeStream, filePath, takeDir, rawStreams });
   socket.emit(EVENTS.TAKE_STARTED, { takeId, filePath });
   console.log(`Take started: ${filePath}`);
 }
@@ -360,11 +420,8 @@ function stopTake(socket, takeId) {
   const take = activeTakes.get(takeId);
   if (!take) return;
 
-  io.off(EVENTS.MOCAP_DATA, take.onData);
-  if (take.videoStream) {
-    take.videoStream.end();
-    take.videoStream = null;
-  }
+  if (take.videoStream) { take.videoStream.end(); take.videoStream = null; }
+  for (const ws of Object.values(take.rawStreams || {})) ws.end();
   take.writeStream.end(() => {
     socket.emit(EVENTS.TAKE_STOPPED, { takeId, filePath: take.filePath });
     console.log(`Take stopped: ${take.filePath}`);

@@ -271,6 +271,22 @@ window.NodePlugins['merge'] = {
     cont._cleanupTimer = timer;
   },
 
+  getSettings(nodeId) {
+    const state = window._mergeState && window._mergeState[nodeId];
+    return { alpha: state ? state.alpha : 128, blendMode: state ? state.blendMode : 'linear' };
+  },
+
+  applySettings(nodeId, s) {
+    const state = window._mergeState && window._mergeState[nodeId];
+    if (!state) return;
+    if (s.alpha     != null) state.alpha     = s.alpha;
+    if (s.blendMode != null) state.blendMode = s.blendMode;
+    const slider = document.getElementById(`pmg-alpha-${nodeId}`);
+    if (slider) slider.value = state.alpha;
+    const sel = document.getElementById(`pmg-mode-${nodeId}`);
+    if (sel) sel.value = state.blendMode;
+  },
+
   getMetrics(nodeId) {
     const state  = window._mergeState && window._mergeState[nodeId];
     const active = !!(state && state.ptr1 && state.ptr2);

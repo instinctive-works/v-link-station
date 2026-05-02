@@ -34,6 +34,7 @@ const EVENTS = {
   TAKE_START: 'take-start',
   TAKE_STOP: 'take-stop',
   TAKE_VIDEO_CHUNK: 'take-video-chunk',
+  TAKE_MOCAP_FRAME: 'take-mocap-frame',
   GET_DEVICES: 'get-devices',
 
   // Socket.IO stream (video-share socket mode)

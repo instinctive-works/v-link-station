@@ -627,6 +627,14 @@ window.fireTrigger = (fromNodeId, fromPinIdx, payload = {}) => {
 // token: { ptr, width, height, stride, seq }
 // The ptr is valid for the duration of this synchronous call chain;
 // the caller (source node) frees it immediately after this returns.
+window.notifyMocap = (fromNodeId, fromPinIdx, data) => {
+  for (const conn of window.connections.values()) {
+    if (conn.fromNodeId !== fromNodeId || conn.fromPinIdx !== fromPinIdx) continue;
+    const handler = nodeHandlers.get(conn.toNodeId);
+    if (handler && handler.onMocap) handler.onMocap(data, fromNodeId, conn.toNodeId);
+  }
+};
+
 window.notifyFrame = (fromNodeId, fromPinIdx, token) => {
   for (const conn of window.connections.values()) {
     if (conn.fromNodeId !== fromNodeId || conn.fromPinIdx !== fromPinIdx) continue;
@@ -1149,7 +1157,7 @@ window.NodePlugins['recording'] = {
   pins: {
     in:  [
       { label: 'トリガー入力', accepts: window.PIN_TYPES.TRIGGER },
-      { label: '収録', accepts: [window.PIN_TYPES.VIDEO, window.PIN_TYPES.WASM_FRAME] },
+      { label: '収録', accepts: [window.PIN_TYPES.VIDEO, window.PIN_TYPES.WASM_FRAME, window.PIN_TYPES.LIVELINK_FACE] },
     ],
     out: [
       { type: window.PIN_TYPES.TRIGGER, label: '録画' },
@@ -1180,6 +1188,7 @@ window.NodePlugins['recording'] = {
       recordDir: localStorage.getItem('rec-recordDir') || '',
       connectedVideoIds: new Set(),
       connectedFrameIds: new Set(), // WASM_FRAME sources
+      connectedMocapIds: new Set(), // LIVELINK_FACE sources
       syncInterval: null,
       // WebCodecs state
       _encoder: null, _mux: null, _frameCanvas: null, _frameCtx: null,
@@ -1199,7 +1208,7 @@ window.NodePlugins['recording'] = {
               <span class="pin-dot"></span>
               <span class="pin-label" style="margin-left:6px;">トリガー</span>
             </div>
-            <div class="pin-row pin-in pin-type-multi" data-accepts="video,wasm-frame" style="margin:0;">
+            <div class="pin-row pin-in pin-type-multi" data-accepts="video,wasm-frame,livelink-face" style="margin:0;">
               <span class="pin-dot"></span>
               <span class="pin-label" style="margin-left:6px;">収録</span>
             </div>
@@ -1228,9 +1237,12 @@ window.NodePlugins['recording'] = {
         if (toNodeId !== nodeId) return;
         const conn = [...window.connections.values()]
           .find(c => c.toNodeId === nodeId && c.fromNodeId === fromNodeId);
-        if (conn && conn.toPinIdx === 1) {
+        if (!conn) return;
+        if (conn.toPinIdx === 1) {
           if (conn.type === window.PIN_TYPES.WASM_FRAME) {
             state.connectedFrameIds.add(fromNodeId);
+          } else if (conn.type === window.PIN_TYPES.LIVELINK_FACE) {
+            state.connectedMocapIds.add(fromNodeId);
           } else {
             state.connectedVideoIds.add(fromNodeId);
           }
@@ -1240,6 +1252,7 @@ window.NodePlugins['recording'] = {
         if (toNodeId !== nodeId) return;
         state.connectedVideoIds.delete(fromNodeId);
         state.connectedFrameIds.delete(fromNodeId);
+        state.connectedMocapIds.delete(fromNodeId);
         if (state.active && state.connectedVideoIds.size === 0 && state.connectedFrameIds.size === 0)
           window._recStop(nodeId);
       },
@@ -1253,14 +1266,24 @@ window.NodePlugins['recording'] = {
         if (!state.active || !state.connectedFrameIds.has(fromNodeId)) return;
         window._recEncodeFrame(nodeId, token);
       },
+      onMocap(data, fromNodeId) {
+        if (!state.active || !state.connectedMocapIds.has(fromNodeId)) return;
+        if (!state.takeId) return;
+        const el = document.getElementById(fromNodeId);
+        const nameEl = el && el.querySelector('.node-name');
+        const sourceNode = (nameEl && nameEl.value.trim()) || fromNodeId;
+        const { _raw, ...cleanData } = data.data || {};
+        window.socket.emit(EVENTS.TAKE_MOCAP_FRAME, { takeId: state.takeId, payload: { format: data.format, data: cleanData, port: data.port, sourceNode } });
+      },
     });
 
     // Sync: enable/disable REC button based on stream availability
     state.syncInterval = setInterval(() => {
       const hasStream = [...state.connectedVideoIds].some(id => window.nodeStreams.has(id));
       const hasFrame  = state.connectedFrameIds.size > 0;
+      const hasMocap  = state.connectedMocapIds.size > 0;
       const btn = document.getElementById(`rec-btn-${nodeId}`);
-      if (btn) btn.disabled = !(hasStream || hasFrame);
+      if (btn) btn.disabled = !(hasStream || hasFrame || hasMocap);
     }, 500);
   },
 
@@ -1528,7 +1551,16 @@ window._recStart = (nodeId, overrideName) => {
     const el  = document.getElementById(`rec-timer-${nodeId}`);
     if (el) el.textContent = `${h}:${m}:${sec}`;
   }, 1000);
-  window.socket.emit(EVENTS.TAKE_START, { takeId: state.takeId, recordDir: state.recordDir || undefined });
+  const rawSources = [];
+  for (const nid of state.connectedMocapIds) {
+    const s = window._llFaceState && window._llFaceState[nid];
+    if (!s) continue;
+    const el = document.getElementById(nid);
+    const nameEl = el && el.querySelector('.node-name');
+    const nodeName = (nameEl && nameEl.value.trim()) || nid;
+    rawSources.push({ nodeName, port: s.port, protocol: 'livelink-face' });
+  }
+  window.socket.emit(EVENTS.TAKE_START, { takeId: state.takeId, recordDir: state.recordDir || undefined, rawSources });
   // Start MediaRecorder for VIDEO streams (VIDEO pin or WASM_FRAME pin with a backing stream)
   const streamId = [...state.connectedVideoIds].find(id => window.nodeStreams.has(id))
                 ?? [...state.connectedFrameIds].find(id => window.nodeStreams.has(id));
@@ -1649,7 +1681,6 @@ window.NodePlugins['recording'].create({ x: 50, y: 50 });
   const mf = { label: 'Motion Data', accepts: window.PIN_TYPES.LIVELINK_FACE };
   const tr = { out: [{ type: window.PIN_TYPES.TRIGGER, label: 'ステータス' }], in: [{ label: 'トリガー', accepts: window.PIN_TYPES.TRIGGER }] };
 
-  mk('cast-livelink', 'LiveLink Face out', '📤', fc, 'LiveLink', ll, { out: [], in: [mf] });
   mk('cast-vmc',      'VMC out',           '📤', mc, 'VMC',     ll, { out: [], in: [mf] });
   mk('cast-mocopi',   'mocopi out',        '📤', mc, 'mocopi',  ll, { out: [], in: [mf] });
 

@@ -1,6 +1,6 @@
 // VLink WASM video loader
 // Fetches /wasm-video/video_proc.wasm and exposes window.VLinkWasm.
-// Loaded before mocap.js so it begins fetching early; nodes guard with
+// Loaded before console.js so it begins fetching early; nodes guard with
 // `if (window.VLinkWasm)` before using it.
 (async function initVLinkWasm() {
   try {

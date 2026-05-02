@@ -232,6 +232,18 @@ window.NodePlugins['video-switch'] = {
     }
   },
 
+  getSettings(nodeId) {
+    const state = window._vSwitchState && window._vSwitchState[nodeId];
+    return { autoMode: state ? state.autoMode : true, active: state ? state.active : 'a' };
+  },
+
+  applySettings(nodeId, s) {
+    const state = window._vSwitchState && window._vSwitchState[nodeId];
+    if (!state) return;
+    if (s.autoMode != null) state.autoMode = s.autoMode;
+    if (s.active   != null) state.active   = s.active;
+  },
+
   getMetrics(nodeId) {
     const state = window._vSwitchState && window._vSwitchState[nodeId];
     const connected = !!(state && (state.srcA || state.srcB));

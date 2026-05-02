@@ -26,8 +26,8 @@ packages/
     browser.html       非 Electron ブラウザ向け（収録一覧 + ライブ視聴タブ統合）
     takes.html         収録一覧ページ
     live.html          WebRTC ライブ視聴ページ
-    mocap.js           キャンバスインフラのみ。ノード固有ロジックは書かない
-    mocap.css          全ノード共通スタイル
+    console.js           キャンバスインフラのみ。ノード固有ロジックは書かない
+    console.css          全ノード共通スタイル
     package.json
   protocols/           プロトコルプラグイン一式 (@v-link/protocols)
     livelink-face/     parser.js (Node.js) / renderer.js (browser) / node.js (plugin)
@@ -42,8 +42,17 @@ packages/
     livelink-mb/       node.js
     vmc/               node.js
     mocopi/            node.js
+    virtual-camera/    node.js  ← DirectShow 仮想カメラ出力（Electron 専用・1インスタンス制限）
     package.json
+  virtual-camera-helper/  C++ ヘルパー（vcam-helper.exe / vcam-source.dll）
+    src/
+      vcam_helper.cpp  stdin から JPEG を受信し共有メモリへ書き込む
+      vcam_source.cpp  DirectShow フィルター（DLL）。共有メモリからフレームを取り出して配信
+      vcam_shared.h    共有メモリ定義（VCAM_MAP_NAME / VCAM_EVENT_NAME / VCamShmHeader）
+    CMakeLists.txt
   shared/              サーバー・クライアント共通定数 (@v-link/shared)
+debug/               デバッグ専用（コミット不要）
+  temp/              一時出力ファイル置き場（ログ・ダンプ等）
     constants.js
     package.json
   wasm-video/          WASM フレーム処理 (Rust → wasm32-unknown-unknown)
@@ -66,10 +75,17 @@ pnpm dist    # electron-builder (apps/desktop 経由)
 > また `.bin` シム生成が UNC パスで失敗するため `start` スクリプトは
 > `node node_modules/electron/cli.js` で electron を直接起動している。
 
+## デバッグ・一時ファイルのルール
+
+- デバッグ用スクリプト・ヘルパーは `debug/` に置く
+- 一時出力ファイル（ログ・ダンプ・キャプチャ等）は `debug/temp/` に出力する
+- `apps/server/` や `packages/` 直下に一時ファイルを置かない
+- `debug/` はコミット不要（`.gitignore` 対象）
+
 ## ノードプラグインのルール
 
 新しいノードを追加するときは **`protocols/<name>/node.js` 1ファイルに以下をすべて実装する**。
-`mocap.js` や `renderer/` 直下には書かない。
+`console.js` や `renderer/` 直下には書かない。
 
 ### 必須プロパティ
 
@@ -90,6 +106,8 @@ window.NodePlugins['plugin-id'] = {
   mount(nodeId, nodeEl)     { ... },  // ノードカード本体を構築
   createPanel(nodeId, cont) { ... },  // 右ペイン詳細パネル。不要なら null
   getMetrics(nodeId)        { ... },  // パフォーマンスパネル用メトリクス
+  getSettings(nodeId)       { ... },  // シーン保存用設定値を返す（省略可）
+  applySettings(nodeId, s)  { ... },  // シーン復元時に設定値を適用（省略可）
   unmount(nodeId)           { ... },  // 削除時クリーンアップ
 };
 ```
@@ -127,6 +145,42 @@ return {
 | `state-orange` | オレンジ | 利用可能だが未送出 |
 | `state-purple` + blink | 紫点滅 | 配信中 |
 
+### getSettings / applySettings のルール
+
+ユーザーが設定する値（ポート番号・フィットモード・ブレンド率など）は `getSettings`/`applySettings` で保存・復元する。
+接続状態（`srcId` 等）は `connections` から `onConnected` 経由で自動復元されるため保存不要。
+
+```javascript
+getSettings(nodeId) {
+  const state = window._myState && window._myState[nodeId];
+  return { port: state ? state.port : 11111 };
+},
+applySettings(nodeId, s) {
+  const state = window._myState && window._myState[nodeId];
+  if (!state) return;
+  if (s.port != null) {
+    state.port = s.port;
+    const inp = document.getElementById(`my-port-${nodeId}`);
+    if (inp) inp.value = s.port;
+  }
+},
+```
+
+### インスタンス数制限のルール
+
+デバイス制約などで1つしか作れないノードは `create` の先頭でチェックする。
+`window._myState` がすでにエントリを持っていれば `alert` して `null` を返す。
+
+```javascript
+create(pos) {
+  if (window._myState && Object.keys(window._myState).length > 0) {
+    alert('このノードは1つしか作成できません。');
+    return null;
+  }
+  // ...
+},
+```
+
 ### ノード名の表記ルール
 
 - `label`（右クリックメニューに表示される名前）は **日本語表記** にする
@@ -151,7 +205,7 @@ function nextName() {
 
 - 同じ pluginId のノードが1つもなければ `NodeLabel`（番号なし）
 - 既に `NodeLabel` が存在すれば `NodeLabel_2`、以降は最小の未使用番号
-- 実装は `mocap.js` の `window.nextUniqueName(pluginId, baseName)` を参照
+- 実装は `console.js` の `window.nextUniqueName(pluginId, baseName)` を参照
 - デバイスノード（LiveLink 等）は `getNextDeviceName()` が同等の処理をしている
 
 ### FPS 計測（映像ノード共通）
@@ -159,7 +213,7 @@ function nextName() {
 `requestVideoFrameCallback` を使い `window.nodeMetrics.set(nodeId, { fps, resolution })` に書き込む。
 フォールバックとして `setInterval` で解像度のみ計測する。
 
-## グローバル API（mocap.js が公開）
+## グローバル API（console.js が公開）
 
 | 変数 / 関数 | 型 | 説明 |
 |---|---|---|
@@ -241,9 +295,17 @@ window.registerNodeHandlers(nodeId, {
 });
 ```
 
+## パフォーマンスパネルの更新ルール
+
+`console.js` の `setInterval`（500ms）がノードのステータスを `panel-content` に書き込む。
+このタイマーは **`_rightActiveTab === 'nodes'` のときのみ** `panel-content` を操作する。
+`設定` タブや `収録一覧` タブ表示中は何もしない。
+
+新たに `panel-content` を操作するコードを追加する場合は同様に `_rightActiveTab` をチェックすること。
+
 ## Recording ノードのルール
 
-- `mocap.js` 内に直書き（`protocols/` に移動しない）
+- `console.js` 内に直書き（`protocols/` に移動しない）
 - LiveLink テイク録画（`.vlnk`）の根幹機能であるため
 - `takeState` オブジェクトで状態管理、`socket.emit('take-start/stop')` でサーバーと同期
 
@@ -270,7 +332,7 @@ pins: {
 ### 新しいピン型を追加する手順
 
 1. `shared/constants.js` の `PIN_TYPES` にエントリ追加
-2. `renderer/mocap.css` に `.pin-type-<name>` のスタイルを追加
+2. `renderer/console.css` に `.pin-type-<name>` のスタイルを追加
 3. 各 `node.js` で `window.PIN_TYPES.<KEY>` を参照
 
 ## ピン型と色
@@ -293,10 +355,13 @@ pins: {
 
 | 関数 | シグネチャ | 説明 |
 |---|---|---|
-| `alloc_frame(size)` | `usize → ptr` | ゼロ初期化フレームバッファを WASM ヒープに確保 |
+| `alloc_frame(size)` | `usize → ptr` | ゼロ初期化フレームバッファを WASM ヒープに確保（align=16） |
 | `free_frame(ptr, size)` | `ptr, usize → void` | `alloc_frame` で確保したバッファを解放 |
 | `copy_frame(src, dst, len)` | `ptr, ptr, usize → void` | WASM 内メモリコピー（Merge ノードがフレームをスナップショット保持するために使用） |
-| `blend_frames(p1, p2, out, size, alpha)` | `ptr, ptr, ptr, usize, u32 → void` | 2フレームをアルファブレンド。`alpha=0`→p1 のみ、`alpha=256`→p2 のみ、`alpha=128`→50/50 |
+| `scale_frame(src, src_w, src_h, dst, dst_w, dst_h)` | `ptr, u32, u32, ptr, u32, u32 → void` | ニアレストネイバーで RGBA フレームをリサイズ。`dst` は `dst_w * dst_h * 4` バイト確保済みであること |
+| `blend_frames(a, b, out, len, alpha_256)` | `ptr, ptr, ptr, usize, u32 → void` | アルファブレンド。`alpha_256=0`→A のみ、`256`→B のみ、`128`→50/50。出力 alpha は常に 255 |
+| `add_frames(a, b, out, len)` | `ptr, ptr, ptr, usize → void` | 加算ブレンド（各チャンネル clamp 255、出力 alpha は常に 255） |
+| `diff_frames(a, b, out, len)` | `ptr, ptr, ptr, usize → void` | 差分ブレンド（`\|A−B\|` per channel、出力 alpha は常に 255） |
 
 JS 側からは `new Uint8ClampedArray(window.VLinkWasm.memory.buffer, ptr, size)` でアクセスする。
 
