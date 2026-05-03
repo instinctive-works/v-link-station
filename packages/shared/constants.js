@@ -43,6 +43,21 @@ const EVENTS = {
   STREAM_FRAME:      'stream:frame',
   STREAM_LIST:       'stream:list',
 
+  // ── AJA Ki Pro ──
+  KIPRO_RECORD: 'kipro:record',
+  KIPRO_STOP:   'kipro:stop',
+  KIPRO_RESULT: 'kipro:result',
+
+  // ── OBS ──
+  OBS_RECORD:   'obs:record',
+  OBS_STOP:     'obs:stop',
+  OBS_SET_TEXT: 'obs:set-text',
+  OBS_RESULT:   'obs:result',
+
+  // ── Stype ──
+  STYPE_SEND:   'stype:send',
+  STYPE_RESULT: 'stype:result',
+
   // WebRTC signaling (live stream)
   RTC_VIEWER_JOIN:   'rtc:viewer-join',
   RTC_VIEWER_JOINED: 'rtc:viewer-joined',

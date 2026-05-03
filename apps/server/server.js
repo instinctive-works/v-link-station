@@ -320,6 +320,64 @@ io.on('connection', (socket) => {
     _closeMjpegClients(nodeId);
   });
 
+  // ── AJA Ki Pro ──
+  socket.on('kipro:record', async ({ nodeId, host }) => {
+    try {
+      // Switch to Record-Play mode if needed
+      const stateRes = await kiproGet(host, 'action=get&paramid=eParamID_MediaState');
+      const stateVal = JSON.parse(stateRes.body).value;
+      if (stateVal === '1') {
+        await kiproGet(host, 'action=set&paramid=eParamID_MediaState&value=0');
+      }
+      await kiproGet(host, 'action=set&paramid=eParamID_TransportCommand&value=3');
+      socket.emit('kipro:result', { nodeId, ok: true, action: 'record', message: 'Recording started' });
+    } catch (err) {
+      socket.emit('kipro:result', { nodeId, ok: false, action: 'record', message: err.message });
+    }
+  });
+
+  socket.on('kipro:stop', async ({ nodeId, host }) => {
+    try {
+      await kiproGet(host, 'action=set&paramid=eParamID_TransportCommand&value=4');
+      socket.emit('kipro:result', { nodeId, ok: true, action: 'stop', message: 'Stopped' });
+    } catch (err) {
+      socket.emit('kipro:result', { nodeId, ok: false, action: 'stop', message: err.message });
+    }
+  });
+
+  // ── OBS WebSocket ──
+  // commands: [{ requestType, requestData? }]
+  // 1接続でコマンドを順次実行し、完了後に切断する
+  socket.on('obs:exec', async ({ nodeId, host, port, password, commands }) => {
+    const action = resolveObsAction(commands[0]?.requestType);
+    try {
+      await obsWsSession(host, port || 4455, password, commands);
+      socket.emit('obs:result', { nodeId, ok: true, action, connected: true });
+    } catch (err) {
+      socket.emit('obs:result', { nodeId, ok: false, action, connected: false, message: err.message });
+    }
+  });
+
+  socket.on('obs:ping', async ({ nodeId, host, port, password }) => {
+    try {
+      await obsWsSession(host, port || 4455, password, [{ requestType: 'GetVersion' }]);
+      socket.emit('obs:result', { nodeId, ok: true, action: 'ping', connected: true });
+    } catch (err) {
+      socket.emit('obs:result', { nodeId, ok: false, action: 'ping', connected: false, message: err.message });
+    }
+  });
+
+  // ── Stype ──
+  socket.on('stype:send', ({ nodeId, host, message }) => {
+    const sock = dgram.createSocket('udp4');
+    const buf = Buffer.from(message, 'utf8');
+    sock.send(buf, 2458, host, (err) => {
+      sock.close();
+      if (err) socket.emit('stype:result', { nodeId, ok: false, message: err.message });
+      else      socket.emit('stype:result', { nodeId, ok: true,  message });
+    });
+  });
+
   // ── FastShare (WebP/JPEG) ──
   socket.on('fastshare:frame', (payload) => {
     // payload: { streamId: string, frame: string(base64) }
@@ -378,6 +436,78 @@ io.on('connection', (socket) => {
     console.log('Client disconnected:', socket.id);
   });
 });
+
+// ─── AJA Ki Pro HTTP helper ───────────────────────────────────────────────────
+function kiproGet(host, query) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`http://${host}/config?${query}`, { timeout: 5000 }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Ki Pro request timeout')); });
+  });
+}
+
+// ─── OBS WebSocket v5 helper ──────────────────────────────────────────────────
+// 1接続でcommands配列を順次実行し、全完了後に切断する
+function obsWsSession(host, port, password, commands) {
+  const WebSocket = require('ws');
+  const { createHash } = require('crypto');
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://${host}:${port}`);
+    const timer = setTimeout(() => { ws.terminate(); reject(new Error('OBS connection timeout')); }, 8000);
+    let cmdIndex = 0;
+    let done = false;
+
+    function finish(err) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      ws.close();
+      if (err) reject(err); else resolve();
+    }
+
+    function sendNext() {
+      if (cmdIndex >= commands.length) { finish(null); return; }
+      const { requestType, requestData } = commands[cmdIndex];
+      ws.send(JSON.stringify({ op: 6, d: { requestType, requestId: String(cmdIndex), requestData: requestData || {} } }));
+    }
+
+    ws.on('error', (err) => finish(err));
+    ws.on('message', (raw) => {
+      let msg;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+
+      if (msg.op === 0) { // Hello
+        let auth;
+        if (password && msg.d.authentication) {
+          const { salt, challenge } = msg.d.authentication;
+          const secret = createHash('sha256').update(password + salt).digest('base64');
+          auth = createHash('sha256').update(secret + challenge).digest('base64');
+        }
+        ws.send(JSON.stringify({ op: 1, d: { rpcVersion: 1, authentication: auth, eventSubscriptions: 0 } }));
+      } else if (msg.op === 2) { // Identified
+        sendNext();
+      } else if (msg.op === 7) { // RequestResponse
+        if (!msg.d.requestStatus.result) {
+          finish(new Error(msg.d.requestStatus.comment || `OBS error ${msg.d.requestStatus.code}`));
+          return;
+        }
+        cmdIndex++;
+        sendNext();
+      }
+    });
+  });
+}
+
+function resolveObsAction(requestType) {
+  if (requestType === 'StartRecord') return 'record';
+  if (requestType === 'StopRecord')  return 'stop';
+  if (requestType === 'GetVersion')  return 'ping';
+  return 'set-text';
+}
 
 // ─── Take recording ───────────────────────────────────────────────────────────
 // takeId → { stream, filePath, frameCount }

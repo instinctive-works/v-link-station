@@ -1561,6 +1561,7 @@ window._recStart = (nodeId, overrideName) => {
     rawSources.push({ nodeName, port: s.port, protocol: 'livelink-face' });
   }
   window.socket.emit(EVENTS.TAKE_START, { takeId: state.takeId, recordDir: state.recordDir || undefined, rawSources });
+  window.fireTrigger(nodeId, 0, { bool: true, st: state.takeId });
   // Start MediaRecorder for VIDEO streams (VIDEO pin or WASM_FRAME pin with a backing stream)
   const streamId = [...state.connectedVideoIds].find(id => window.nodeStreams.has(id))
                 ?? [...state.connectedFrameIds].find(id => window.nodeStreams.has(id));
@@ -1593,6 +1594,7 @@ window._recStop = (nodeId) => {
   const el = document.getElementById(`rec-timer-${nodeId}`);
   if (el) el.textContent = '00:00:00';
   window.socket.emit(EVENTS.TAKE_STOP, { takeId: state.takeId });
+  window.fireTrigger(nodeId, 0, { bool: false });
   // MediaRecorder cleanup
   if (state._videoRecorder) { try { state._videoRecorder.stop(); } catch(_) {} state._videoRecorder = null; }
   if (state._recorder) { try { state._recorder.stop(); } catch(_) {} state._recorder = null; }
@@ -1684,10 +1686,8 @@ window.NodePlugins['recording'].create({ x: 50, y: 50 });
   mk('cast-vmc',      'VMC out',           '📤', mc, 'VMC',     ll, { out: [], in: [mf] });
   mk('cast-mocopi',   'mocopi out',        '📤', mc, 'mocopi',  ll, { out: [], in: [mf] });
 
-  mk('remote-obs',           'OBS',          '🔴', rm, null, ll, tr);
   mk('remote-motionbuilder', 'MotionBuilder', '🎞️', rm, null, ll, tr);
   mk('remote-vicon-shogun',  'ViconShogun',  '🎯', rm, null, ll, tr);
-  mk('remote-aja-kipro',     'Aja Kipro',    '📼', rm, null, ll, tr);
   mk('remote-blackmagic',    'Blackmagic',   '🎥', rm, null, ll, tr);
   mk('remote-dmx',           'DMX',          '💡', rm, null, ll, tr);
 
@@ -1852,8 +1852,10 @@ window.addEventListener('beforeunload', () => {
   try { localStorage.setItem('vlnk_autosave', JSON.stringify(captureScene('__autosave__'))); } catch {}
 });
 
-// Auto-load last scene on startup
-(function() {
+// Auto-load last scene on startup.
+// DOMContentLoaded fires after all synchronous <script> tags have executed,
+// ensuring all plugins are registered in window.NodePlugins before applyScene runs.
+document.addEventListener('DOMContentLoaded', function() {
   try {
     // 保存済みシーンが選択されていた場合はそちらを優先して復元
     if (_currentSceneIdx >= 0) {
@@ -1866,4 +1868,4 @@ window.addEventListener('beforeunload', () => {
     if (raw) { applyScene(JSON.parse(raw)); showNodeList(); return; }
   } catch (e) { console.warn('Scene auto-load failed:', e); }
   showNodeList();
-})();
+});
