@@ -378,6 +378,17 @@ io.on('connection', (socket) => {
     });
   });
 
+  // ── Vicon Shogun (UDP XML Remote Capture) ──
+  socket.on('shogun:send', ({ nodeId, host, port, xml }) => {
+    const sock = dgram.createSocket('udp4');
+    const buf  = Buffer.from(xml, 'utf8');
+    sock.send(buf, port || 7003, host, (err) => {
+      sock.close();
+      if (err) socket.emit('shogun:result', { nodeId, ok: false, message: err.message });
+      else      socket.emit('shogun:result', { nodeId, ok: true });
+    });
+  });
+
   // ── FastShare (WebP/JPEG) ──
   socket.on('fastshare:frame', (payload) => {
     // payload: { streamId: string, frame: string(base64) }

@@ -155,7 +155,7 @@ window.NodePlugins['remote-obs'] = {
     const active = state && state.recording;
     const conn   = state ? state.connected : null;
     const statusLabel = conn === null ? '未確認' : conn ? (active ? '録画中' : '接続中') : 'エラー';
-    const statusCls   = conn === null ? 'badge-inactive' : conn ? (active ? 'badge-warn' : 'badge-active') : 'badge-error';
+    const statusCls   = conn === null ? 'badge-inactive' : conn ? (active ? 'badge-active' : 'badge-warn') : 'badge-error';
     return {
       dotCls:      state ? window._obsStateDotCls(state) : 'node-state-dot',
       statusCls,
@@ -176,8 +176,8 @@ window.NodePlugins['remote-obs'] = {
 
 window._obsStateDotCls = (state) => {
   if (state.connected === false) return 'node-state-dot state-error';
-  if (state.connected === true && state.recording) return 'node-state-dot state-orange';
-  if (state.connected === true) return 'node-state-dot state-active';
+  if (state.connected === true && state.recording) return 'node-state-dot state-active';
+  if (state.connected === true) return 'node-state-dot state-orange';
   return 'node-state-dot';
 };
 

@@ -1687,7 +1687,6 @@ window.NodePlugins['recording'].create({ x: 50, y: 50 });
   mk('cast-mocopi',   'mocopi out',        '📤', mc, 'mocopi',  ll, { out: [], in: [mf] });
 
   mk('remote-motionbuilder', 'MotionBuilder', '🎞️', rm, null, ll, tr);
-  mk('remote-vicon-shogun',  'ViconShogun',  '🎯', rm, null, ll, tr);
   mk('remote-blackmagic',    'Blackmagic',   '🎥', rm, null, ll, tr);
   mk('remote-dmx',           'DMX',          '💡', rm, null, ll, tr);
 
